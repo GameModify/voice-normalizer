@@ -324,6 +324,8 @@ module.exports = class VoiceNormalizer {
             st.voiceCount = 0;
             st.lastWrite = null;
             st.lastGain = 1;
+            st.stableGain = 1;
+            st.activityPolls = 0;
             st.lastSpeechSampleAt = null;
             st.talking = false;
             st.writeUnconfirmed = 0;
@@ -578,7 +580,7 @@ module.exports = class VoiceNormalizer {
     root.style.cssText =
       "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
     const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer · 1.0.7 Alpha";
+    title.textContent = "VoiceNormalizer · 1.0.8 Alpha";
     title.style.margin = "0";
     const help = document.createElement("p");
     help.textContent =

@@ -1,4 +1,6 @@
-﻿"use strict";
+"use strict";
+
+const { detectSpeech } = require("./speech-activity");
 
 function createUserState(base) {
   return {
@@ -10,40 +12,42 @@ function createUserState(base) {
     writeUnconfirmed: 0,
     lastLevel: 0,
     lastGain: 1,
+    stableGain: 1,
+    activityPolls: 0,
     lastSpeechSampleAt: null,
     talking: false,
   };
 }
 
-// This is deliberately the same gain law as version 1.0.7.
-// Keep changes to how speech is classified in separate feature branches.
-function calculateGain(st, level, detected, timestamp) {
-  const talking = (detected === 1 || detected === true) && level >= 0.006;
-  st.talking = talking;
-  if (talking) {
-    // About 3 seconds for a 63% adjustment in speaking-time average.
-    // Clamp elapsed time so a long silent pause does not erase the history.
-    const time = timestamp;
+/**
+ * Isolated events may duck loud peaks, but do not update the persistent
+ * voice average or the held gain. The controller handles volume ramps.
+ */
+function calculateGain(state, level, detected, timestamp) {
+  const { active, confirmed } = detectSpeech(state, level, detected);
+  if (confirmed) {
     const elapsed =
-      st.lastSpeechSampleAt === null
+      state.lastSpeechSampleAt === null
         ? 100
-        : Math.max(50, Math.min(250, time - st.lastSpeechSampleAt));
+        : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
     const alpha = 1 - Math.exp(-elapsed / 3000);
-    st.ema = st.ema === null ? level : st.ema * (1 - alpha) + level * alpha;
-    st.lastSpeechSampleAt = time;
-    st.voiceCount++;
+    state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
+    state.lastSpeechSampleAt = timestamp;
+    state.voiceCount++;
   }
-  // HOLD the last gain through silence: do not reset to full volume
-  // immediately before the speaker starts talking again.
-  let gain = talking ? 1 : Number.isFinite(st.lastGain) ? st.lastGain : 1;
-  if (talking && st.voiceCount >= 7 && st.ema !== null) {
-    gain = Math.max(0.45, Math.min(2.0, 0.095 / Math.max(st.ema, 0.006)));
-  } else if (talking && level > 0.18) {
+
+  let gain = state.stableGain;
+  if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
+    gain = Math.max(0.45, Math.min(2.0, 0.095 / Math.max(state.ema, 0.006)));
+  } else if (confirmed && level > 0.18) {
     gain = Math.min(1, 0.18 / level);
   }
-  // Fast peak attenuation remains separate from the slow speech average.
-  if (talking && level > 0.18) gain = Math.min(gain, 0.18 / level);
+
+  // Peak attenuation remains responsive even during unconfirmed short noises.
+  if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
+
   gain = Math.max(0.45, Math.min(2.0, gain));
+  if (confirmed) state.stableGain = gain;
   return gain;
 }
 
