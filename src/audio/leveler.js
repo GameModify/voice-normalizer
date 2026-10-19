@@ -1,6 +1,7 @@
 "use strict";
 
 const { detectSpeech } = require("./speech-activity");
+const { DEFAULT_SETTINGS } = require("./settings");
 
 function createUserState(base) {
   return {
@@ -20,10 +21,10 @@ function createUserState(base) {
 }
 
 /**
- * Isolated events may duck loud peaks, but do not update the persistent
- * voice average or the held gain. The controller handles volume ramps.
+ * RTP statistics are not samples and cannot provide a true peak limiter.
+ * Isolated events may trigger ducking, but never affect the learned average.
  */
-function calculateGain(state, level, detected, timestamp) {
+function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SETTINGS) {
   const { active, confirmed } = detectSpeech(state, level, detected);
   if (confirmed) {
     const elapsed =
@@ -38,15 +39,15 @@ function calculateGain(state, level, detected, timestamp) {
 
   let gain = state.stableGain;
   if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
-    gain = Math.max(0.45, Math.min(2.0, 0.095 / Math.max(state.ema, 0.006)));
+    gain = settings.targetLevel / Math.max(state.ema, 0.006);
   } else if (confirmed && level > 0.18) {
     gain = Math.min(1, 0.18 / level);
   }
 
-  // Peak attenuation remains responsive even during unconfirmed short noises.
+  // A short loud spike is still ducked before speech has been confirmed.
   if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
 
-  gain = Math.max(0.45, Math.min(2.0, gain));
+  gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
   if (confirmed) state.stableGain = gain;
   return gain;
 }

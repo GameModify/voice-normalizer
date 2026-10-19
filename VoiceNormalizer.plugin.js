@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.1.0-alpha
+ * @version 1.2.0-alpha
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -31,11 +31,71 @@ var require_speech_activity = __commonJS({
   }
 });
 
+// src/audio/settings.js
+var require_settings = __commonJS({
+  "src/audio/settings.js"(exports2, module2) {
+    "use strict";
+    var PRESETS = Object.freeze({
+      soft: Object.freeze({
+        profile: "soft",
+        targetLevel: 0.095,
+        maxGain: 1.3,
+        minGain: 0.65,
+        attack: 0.4,
+        release: 0.06
+      }),
+      balanced: Object.freeze({
+        profile: "balanced",
+        targetLevel: 0.095,
+        maxGain: 2,
+        minGain: 0.45,
+        attack: 0.65,
+        release: 0.1
+      }),
+      aggressive: Object.freeze({
+        profile: "aggressive",
+        targetLevel: 0.105,
+        maxGain: 2,
+        minGain: 0.35,
+        attack: 0.85,
+        release: 0.18
+      })
+    });
+    var DEFAULT_SETTINGS2 = PRESETS.balanced;
+    var BOUNDS = Object.freeze({
+      targetLevel: [0.04, 0.25],
+      maxGain: [1, 2],
+      minGain: [0.25, 1],
+      attack: [0.2, 0.9],
+      release: [0.03, 0.3]
+    });
+    function clampNumber(value, [min, max], fallback) {
+      return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+    }
+    function normalizeSettings2(input) {
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        return { ...DEFAULT_SETTINGS2 };
+      }
+      const profile = ["soft", "balanced", "aggressive", "custom"].includes(input.profile) ? input.profile : "custom";
+      const result = { profile };
+      for (const [key, bounds] of Object.entries(BOUNDS)) {
+        result[key] = clampNumber(input[key], bounds, DEFAULT_SETTINGS2[key]);
+      }
+      return result;
+    }
+    function getPreset(profile) {
+      return normalizeSettings2(PRESETS[profile] || PRESETS.balanced);
+    }
+    module2.exports = { DEFAULT_SETTINGS: DEFAULT_SETTINGS2, PRESETS, BOUNDS, normalizeSettings: normalizeSettings2, getPreset };
+  }
+});
+
 // src/audio/leveler.js
 var require_leveler = __commonJS({
   "src/audio/leveler.js"(exports2, module2) {
     "use strict";
     var { detectSpeech } = require_speech_activity();
+    var { DEFAULT_SETTINGS: DEFAULT_SETTINGS2 } = require_settings();
     function createUserState2(base) {
       return {
         base,
@@ -52,7 +112,7 @@ var require_leveler = __commonJS({
         talking: false
       };
     }
-    function calculateGain2(state, level, detected, timestamp) {
+    function calculateGain2(state, level, detected, timestamp, settings = DEFAULT_SETTINGS2) {
       const { active, confirmed } = detectSpeech(state, level, detected);
       if (confirmed) {
         const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
@@ -63,12 +123,12 @@ var require_leveler = __commonJS({
       }
       let gain = state.stableGain;
       if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
-        gain = Math.max(0.45, Math.min(2, 0.095 / Math.max(state.ema, 6e-3)));
+        gain = settings.targetLevel / Math.max(state.ema, 6e-3);
       } else if (confirmed && level > 0.18) {
         gain = Math.min(1, 0.18 / level);
       }
       if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
-      gain = Math.max(0.45, Math.min(2, gain));
+      gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
       if (confirmed) state.stableGain = gain;
       return gain;
     }
@@ -76,8 +136,128 @@ var require_leveler = __commonJS({
   }
 });
 
+// src/ui/settings-controls.js
+var require_settings_controls = __commonJS({
+  "src/ui/settings-controls.js"(exports2, module2) {
+    "use strict";
+    var { getPreset } = require_settings();
+    var FIELDS = [
+      [
+        "targetLevel",
+        "\u0426\u0435\u043B\u044C RTP (\u0443\u0441\u043B\u043E\u0432\u043D\u044B\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C)",
+        0.04,
+        0.25,
+        5e-3,
+        (v) => (v * 100).toFixed(1) + "%"
+      ],
+      ["maxGain", "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435", 1, 2, 0.05, (v) => (v * 100).toFixed(0) + "% \u043E\u0442 \u0431\u0430\u0437\u044B"],
+      [
+        "minGain",
+        "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u043E\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435",
+        0.25,
+        1,
+        0.05,
+        (v) => (20 * Math.log10(v)).toFixed(1) + " \u0434\u0411"
+      ],
+      [
+        "attack",
+        "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u0443\u043C\u0435\u043D\u044C\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
+        0.2,
+        0.9,
+        0.05,
+        (v) => Math.round(v * 100) + "% \u0437\u0430 \u043E\u043F\u0440\u043E\u0441"
+      ],
+      [
+        "release",
+        "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u0443\u0432\u0435\u043B\u0438\u0447\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
+        0.03,
+        0.3,
+        0.01,
+        (v) => Math.round(v * 100) + "% \u0437\u0430 \u043E\u043F\u0440\u043E\u0441"
+      ]
+    ];
+    function createSettingsControls2(doc, initial, updateSettings) {
+      let current = { ...initial };
+      const section = doc.createElement("section");
+      section.style.cssText = "padding:12px;border-radius:10px;background:var(--background-secondary);display:flex;flex-direction:column;gap:11px";
+      const heading = doc.createElement("strong");
+      heading.textContent = "\u0413\u043B\u043E\u0431\u0430\u043B\u044C\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u0438";
+      const note = doc.createElement("div");
+      note.style.cssText = "color:var(--text-muted);font-size:12px;line-height:1.35";
+      note.textContent = "\u0426\u0435\u043B\u044C RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0432\u0445\u043E\u0434\u044F\u0449\u0435\u0433\u043E \u0430\u0443\u0434\u0438\u043E, \u043D\u0435 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord. \u0423\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u043E \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0438\u043C \u043F\u043E\u0442\u043E\u043B\u043A\u043E\u043C Discord; \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.";
+      section.append(heading, note);
+      const presetRow = doc.createElement("label");
+      presetRow.style.cssText = "display:flex;gap:10px;align-items:center;justify-content:space-between";
+      const presetText = doc.createElement("span");
+      presetText.textContent = "\u041F\u0440\u043E\u0444\u0438\u043B\u044C";
+      const select = doc.createElement("select");
+      select.style.cssText = "padding:6px;background:var(--input-background);color:var(--text-normal);border:1px solid var(--background-modifier-accent);border-radius:6px";
+      for (const [key, name] of [
+        ["soft", "\u041C\u044F\u0433\u043A\u0438\u0439"],
+        ["balanced", "\u0411\u0430\u043B\u0430\u043D\u0441"],
+        ["aggressive", "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u044B\u0439"],
+        ["custom", "\u041C\u043E\u0439"]
+      ]) {
+        const option = doc.createElement("option");
+        option.value = key;
+        option.textContent = name;
+        select.append(option);
+      }
+      presetRow.append(presetText, select);
+      section.append(presetRow);
+      const controls = [];
+      function refresh() {
+        select.value = current.profile;
+        for (const { key, slider, output, format } of controls) {
+          slider.value = String(current[key]);
+          output.textContent = format(current[key]);
+        }
+      }
+      function commit(next) {
+        current = updateSettings(next);
+        refresh();
+      }
+      select.addEventListener("change", () => {
+        if (select.value === "custom") {
+          commit({ ...current, profile: "custom" });
+        } else {
+          commit(getPreset(select.value));
+        }
+      });
+      for (const [key, label, min, max, step, format] of FIELDS) {
+        const row = doc.createElement("div");
+        row.style.cssText = "display:flex;flex-direction:column;gap:5px";
+        const info = doc.createElement("div");
+        info.style.cssText = "display:flex;gap:8px;justify-content:space-between;font-size:12px";
+        const title = doc.createElement("span");
+        title.textContent = label;
+        const output = doc.createElement("span");
+        output.style.fontVariantNumeric = "tabular-nums";
+        const slider = doc.createElement("input");
+        slider.type = "range";
+        slider.min = String(min);
+        slider.max = String(max);
+        slider.step = String(step);
+        slider.style.width = "100%";
+        slider.addEventListener("input", () => {
+          commit({ ...current, [key]: Number(slider.value), profile: "custom" });
+        });
+        info.append(title, output);
+        row.append(info, slider);
+        section.append(row);
+        controls.push({ key, slider, output, format });
+      }
+      refresh();
+      return section;
+    }
+    module2.exports = { createSettingsControls: createSettingsControls2 };
+  }
+});
+
 // src/index.js
 var { createUserState, calculateGain } = require_leveler();
+var { DEFAULT_SETTINGS, normalizeSettings } = require_settings();
+var { createSettingsControls } = require_settings_controls();
 module.exports = class VoiceNormalizer {
   constructor() {
     this.targets = /* @__PURE__ */ new Set();
@@ -103,10 +283,12 @@ module.exports = class VoiceNormalizer {
     };
     this.testRunning = false;
     this.maxInternalVolume = 200;
+    this.settings = { ...DEFAULT_SETTINGS };
     this.mappingDebug = "\u0435\u0449\u0451 \u043D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445";
     this.lastWriteError = "\u043D\u0435\u0442";
   }
   start() {
+    this.loadSettings();
     this.resolveWriter();
     this.installMenus();
     BdApi.UI.showToast("VoiceNormalizer: \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u041F\u041A\u041C \u043F\u043E \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044E", { type: "info" });
@@ -122,6 +304,23 @@ module.exports = class VoiceNormalizer {
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
+  }
+  loadSettings() {
+    try {
+      this.settings = normalizeSettings(BdApi.Data?.load?.("VoiceNormalizer", "settings"));
+    } catch (_) {
+      this.settings = { ...DEFAULT_SETTINGS };
+    }
+    return this.settings;
+  }
+  updateSettings(next) {
+    this.settings = normalizeSettings(next);
+    try {
+      BdApi.Data?.save?.("VoiceNormalizer", "settings", this.settings);
+    } catch (error) {
+      this.status = "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: " + String(error?.message || error);
+    }
+    return { ...this.settings };
   }
   store() {
     return BdApi.Webpack.getStore("MediaEngineStore");
@@ -383,11 +582,11 @@ module.exports = class VoiceNormalizer {
           st.writeUnconfirmed = 0;
           this.diagnostic.confirmed++;
         }
-        const gain = calculateGain(st, level, input.detected, performance.now());
+        const gain = calculateGain(st, level, input.detected, performance.now(), this.settings);
         const ceiling = this.ceilingFor(st.base);
         const desired = Math.max(0.02, Math.min(ceiling, st.base * gain));
         const delta = desired - now;
-        const weight = delta < 0 ? 0.65 : 0.1;
+        const weight = delta < 0 ? this.settings.attack : this.settings.release;
         const next = Math.max(0.02, Math.min(ceiling, now + delta * weight));
         st.lastGain = next / st.base;
         this.diagnostic.latest = "audio=" + level.toFixed(3) + ", \u0441\u0440\u0435\u0434\u043D\u0435\u0435=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
@@ -595,7 +794,7 @@ module.exports = class VoiceNormalizer {
     const root = document.createElement("div");
     root.style.cssText = "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
     const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer \xB7 1.0.8 Alpha";
+    title.textContent = "VoiceNormalizer \xB7 1.2.0 Alpha";
     title.style.margin = "0";
     const help = document.createElement("p");
     help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
@@ -697,7 +896,12 @@ module.exports = class VoiceNormalizer {
       render();
     });
     actions.append(stop, reload);
-    root.append(title, help, livePanel, people, actions, debug);
+    const controls = createSettingsControls(
+      document,
+      this.settings,
+      (next) => this.updateSettings(next)
+    );
+    root.append(title, help, controls, livePanel, people, actions, debug);
     refresh();
     render();
     const timer = setInterval(() => {
