@@ -5,186 +5,275 @@
  * @version 1.0.7-alpha
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
+};
+
+// src/audio/leveler.js
+var require_leveler = __commonJS({
+  "src/audio/leveler.js"(exports2, module2) {
+    "use strict";
+    function createUserState2(base) {
+      return {
+        base,
+        lastWrite: null,
+        lastWriteTime: 0,
+        ema: null,
+        voiceCount: 0,
+        writeUnconfirmed: 0,
+        lastLevel: 0,
+        lastGain: 1,
+        lastSpeechSampleAt: null,
+        talking: false
+      };
+    }
+    function calculateGain2(st, level, detected, timestamp) {
+      const talking = (detected === 1 || detected === true) && level >= 6e-3;
+      st.talking = talking;
+      if (talking) {
+        const time = timestamp;
+        const elapsed = st.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, time - st.lastSpeechSampleAt));
+        const alpha = 1 - Math.exp(-elapsed / 3e3);
+        st.ema = st.ema === null ? level : st.ema * (1 - alpha) + level * alpha;
+        st.lastSpeechSampleAt = time;
+        st.voiceCount++;
+      }
+      let gain = talking ? 1 : Number.isFinite(st.lastGain) ? st.lastGain : 1;
+      if (talking && st.voiceCount >= 7 && st.ema !== null) {
+        gain = Math.max(0.45, Math.min(2, 0.095 / Math.max(st.ema, 6e-3)));
+      } else if (talking && level > 0.18) {
+        gain = Math.min(1, 0.18 / level);
+      }
+      if (talking && level > 0.18) gain = Math.min(gain, 0.18 / level);
+      gain = Math.max(0.45, Math.min(2, gain));
+      return gain;
+    }
+    module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2 };
+  }
+});
+
+// src/index.js
+var { createUserState, calculateGain } = require_leveler();
 module.exports = class VoiceNormalizer {
   constructor() {
-    this.targets = new Set();
-    this.states = new Map();
+    this.targets = /* @__PURE__ */ new Set();
+    this.states = /* @__PURE__ */ new Map();
     this.enabled = false;
     this.timer = null;
     this.busy = false;
     this.generation = 0;
     this.connection = null;
     this.writer = null;
-    this.writerInfo = "не проверен";
+    this.writerInfo = "\u043D\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D";
     this.unpatches = [];
-    this.panels = new Set();
-    this.status = "Выключено";
-    this.diagnostic = {polls:0, packets:0, mapped:0, writes:0, confirmed:0, failures:0, latest:"—"};
+    this.panels = /* @__PURE__ */ new Set();
+    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+    this.diagnostic = {
+      polls: 0,
+      packets: 0,
+      mapped: 0,
+      writes: 0,
+      confirmed: 0,
+      failures: 0,
+      latest: "\u2014"
+    };
     this.testRunning = false;
-    // The Store may expose percent-like values (e.g. 100) or amplitude-like values.
-    // Never enforce a fixed 2.0 ceiling on values returned by the Store.
     this.maxInternalVolume = 200;
-    this.mappingDebug = "ещё нет данных";
-    this.lastWriteError = "нет";
+    this.mappingDebug = "\u0435\u0449\u0451 \u043D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445";
+    this.lastWriteError = "\u043D\u0435\u0442";
   }
   start() {
     this.resolveWriter();
     this.installMenus();
-    BdApi.UI.showToast("VoiceNormalizer: настройки и ПКМ по пользователю", {type:"info"});
+    BdApi.UI.showToast("VoiceNormalizer: \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u041F\u041A\u041C \u043F\u043E \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044E", { type: "info" });
   }
   stop() {
     this.turnOff();
-    for (const unpatch of this.unpatches) { try { unpatch(); } catch (_) {} }
+    for (const unpatch of this.unpatches) {
+      try {
+        unpatch();
+      } catch (_) {
+      }
+    }
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
   }
-  store() { return BdApi.Webpack.getStore("MediaEngineStore"); }
+  store() {
+    return BdApi.Webpack.getStore("MediaEngineStore");
+  }
   read(id) {
     try {
       const value = this.store()?.getLocalVolume?.(String(id));
-      return Number.isFinite(value) && value >= 0 && value < 1000 ? value : null;
-    } catch (_) { return null; }
+      return Number.isFinite(value) && value >= 0 && value < 1e3 ? value : null;
+    } catch (_) {
+      return null;
+    }
   }
   resolveWriter() {
     this.writer = null;
     try {
-      // BetterVolume locates these actions by setLocalVolume alone.
-      const mod = BdApi.Webpack.getModule(m =>
-        m && typeof m.setLocalVolume === "function" &&
-        typeof m.getLocalVolume !== "function" &&
-        typeof m.getStats !== "function"
+      const mod = BdApi.Webpack.getModule(
+        (m) => m && typeof m.setLocalVolume === "function" && typeof m.getLocalVolume !== "function" && typeof m.getStats !== "function"
       );
       if (mod) {
         this.writer = (id, value) => mod.setLocalVolume(String(id), value, "default");
         this.writerInfo = "MediaEngineActions.setLocalVolume (default)";
         return true;
       }
-    } catch (_) {}
-    this.writerInfo = "не найден setLocalVolume";
+    } catch (_) {
+    }
+    this.writerInfo = "\u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D setLocalVolume";
     return false;
   }
   connect() {
     try {
-      const provider = BdApi.Webpack.getModule(m => typeof m?.getMediaEngine === "function");
+      const provider = BdApi.Webpack.getModule((m) => typeof m?.getMediaEngine === "function");
       let conn = null;
-      provider?.getMediaEngine?.()?.eachConnection?.(c => {
-        if (!conn && typeof c?.getStats === "function" && typeof c?.getUserIdBySsrc === "function" && c.context !== "stream") conn = c;
+      provider?.getMediaEngine?.()?.eachConnection?.((c) => {
+        if (!conn && typeof c?.getStats === "function" && typeof c?.getUserIdBySsrc === "function" && c.context !== "stream")
+          conn = c;
       });
       return conn;
-    } catch (_) { return null; }
+    } catch (_) {
+      return null;
+    }
   }
   participants() {
     const voice = BdApi.Webpack.getStore("VoiceStateStore");
     const users = BdApi.Webpack.getStore("UserStore");
     const selected = BdApi.Webpack.getStore("SelectedChannelStore");
-    const channels = [voice?.getCurrentClientVoiceChannelId?.(), selected?.getVoiceChannelId?.(), selected?.getChannelId?.()].filter(Boolean);
+    const channels = [
+      voice?.getCurrentClientVoiceChannelId?.(),
+      selected?.getVoiceChannelId?.(),
+      selected?.getChannelId?.()
+    ].filter(Boolean);
     let items = [];
     for (const channel of channels) {
       try {
         const states = voice?.getVoiceStatesForChannel?.(channel);
-        items = Object.values(states || {}).flatMap(s => Array.isArray(s) ? s : [s]);
+        items = Object.values(states || {}).flatMap((s) => Array.isArray(s) ? s : [s]);
         if (items.length) break;
-      } catch (_) {}
+      } catch (_) {
+      }
     }
     const self = users?.getCurrentUser?.()?.id;
-    return [...new Set(items.map(s => s?.userId || s?.user_id).filter(v => v && v !== self))].map(id => ({
-      id:String(id), name:users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || "Участник"
+    return [
+      ...new Set(items.map((s) => s?.userId || s?.user_id).filter((v) => v && v !== self))
+    ].map((id) => ({
+      id: String(id),
+      name: users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A"
     }));
   }
-  toast(msg, type="info") {
-    this.status=msg;
-    try { BdApi.UI.showToast(msg,{type}); } catch (_) {}
+  toast(msg, type = "info") {
+    this.status = msg;
+    try {
+      BdApi.UI.showToast(msg, { type });
+    } catch (_) {
+    }
   }
   write(id, value) {
     if (!this.writer || !Number.isFinite(value) || value < 0 || value > this.maxInternalVolume) {
-      this.lastWriteError = "значение " + String(value) + " вне допустимого диапазона 0–" + this.maxInternalVolume;
+      this.lastWriteError = "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435 " + String(value) + " \u0432\u043D\u0435 \u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u043E\u0433\u043E \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430 0\u2013" + this.maxInternalVolume;
       return false;
     }
     try {
       this.writer(String(id), value);
       this.diagnostic.writes++;
-      this.lastWriteError = "нет";
+      this.lastWriteError = "\u043D\u0435\u0442";
       return true;
     } catch (e) {
       this.lastWriteError = String(e?.message || e);
-      this.status = "Ошибка записи громкости: " + this.lastWriteError;
+      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: " + this.lastWriteError;
       return false;
     }
   }
   ceilingFor(base) {
-    // Discord builds may use perceptual percentages or normalized amplitude.
     return base > 4 ? 200 : Math.min(4, base * 2);
   }
   restore(id) {
-    const st=this.states.get(id);
+    const st = this.states.get(id);
     if (!st) return;
-    const now=this.read(id);
-    if (st.lastWrite !== null && Number.isFinite(now) &&
-        Math.abs(now-st.lastWrite) <= Math.max(0.03,st.lastWrite*0.035)) {
+    const now = this.read(id);
+    if (st.lastWrite !== null && Number.isFinite(now) && Math.abs(now - st.lastWrite) <= Math.max(0.03, st.lastWrite * 0.035)) {
       this.write(id, st.base);
     }
     this.states.delete(id);
   }
   turnOff() {
-    this.enabled=false; this.generation++;
+    this.enabled = false;
+    this.generation++;
     if (this.timer) clearInterval(this.timer);
-    this.timer=null;
+    this.timer = null;
     for (const id of [...this.states.keys()]) this.restore(id);
-    this.targets.clear(); this.connection=null;
-    this.status="Выключено";
+    this.targets.clear();
+    this.connection = null;
+    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
   }
   select(id, on) {
-    id=String(id);
+    id = String(id);
     if (!on) {
-      this.targets.delete(id); this.restore(id);
+      this.targets.delete(id);
+      this.restore(id);
       if (!this.targets.size) this.turnOff();
-      else this.status="Выбрано: "+this.targets.size;
+      else this.status = "\u0412\u044B\u0431\u0440\u0430\u043D\u043E: " + this.targets.size;
       return;
     }
-    if (this.testRunning) { this.toast("Заверши ручной тест", "warning"); return; }
-    if (!this.writer && !this.resolveWriter()) {
-      this.toast("Не найден метод управления громкостью Discord", "error"); return;
+    if (this.testRunning) {
+      this.toast("\u0417\u0430\u0432\u0435\u0440\u0448\u0438 \u0440\u0443\u0447\u043D\u043E\u0439 \u0442\u0435\u0441\u0442", "warning");
+      return;
     }
-    const conn=this.connect();
-    const current=this.read(id);
-    if (!conn || !Number.isFinite(current) || current<=0) {
-      this.toast("Нет соединения или исходной громкости пользователя", "warning"); return;
+    if (!this.writer && !this.resolveWriter()) {
+      this.toast("\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u043C\u0435\u0442\u043E\u0434 \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord", "error");
+      return;
+    }
+    const conn = this.connect();
+    const current = this.read(id);
+    if (!conn || !Number.isFinite(current) || current <= 0) {
+      this.toast("\u041D\u0435\u0442 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u044F \u0438\u043B\u0438 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F", "warning");
+      return;
     }
     this.targets.add(id);
-    this.states.set(id,{base:current,lastWrite:null,lastWriteTime:0,ema:null,voiceCount:0,writeUnconfirmed:0,lastLevel:0,lastGain:1,lastSpeechSampleAt:null,talking:false});
+    this.states.set(id, createUserState(current));
     if (!this.enabled) {
-      this.enabled=true;
-      this.connection=conn;
-      const generation=++this.generation;
-      this.timer=setInterval(()=>{this.tick(generation).catch(()=>{});},100);
+      this.enabled = true;
+      this.connection = conn;
+      const generation = ++this.generation;
+      this.timer = setInterval(() => {
+        this.tick(generation).catch(() => {
+        });
+      }, 100);
     }
-    this.status="Включено · ждём речь · пользователей: "+this.targets.size;
+    this.status = "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \xB7 \u0436\u0434\u0451\u043C \u0440\u0435\u0447\u044C \xB7 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + this.targets.size;
   }
   // Discord's getUserIdBySsrc is not guaranteed to return a user ID.
   // Prefer confirmed user IDs from the local voice-state participant list.
   resolveId(conn, ssrc) {
-    const allowed = new Set(this.participants().map(p => p.id));
+    const allowed = new Set(this.participants().map((p) => p.id));
     try {
       const value = conn.getUserIdBySsrc?.(ssrc);
       const id = String(value?.userId ?? value?.id ?? value ?? "");
       if (allowed.has(id)) return id;
-    } catch (_) {}
+    } catch (_) {
+    }
     const remote = conn.remoteAudioSSRCs;
-    const entries = remote instanceof Map ? [...remote.entries()] :
-      remote && typeof remote === "object" ? Object.entries(remote) : [];
-    this.mappingDebug = "remoteAudioSSRCs: " +
-      (remote instanceof Map ? "Map" : Array.isArray(remote) ? "Array" : typeof remote) +
-      ", записей: " + entries.length;
+    const entries = remote instanceof Map ? [...remote.entries()] : remote && typeof remote === "object" ? Object.entries(remote) : [];
+    this.mappingDebug = "remoteAudioSSRCs: " + (remote instanceof Map ? "Map" : Array.isArray(remote) ? "Array" : typeof remote) + ", \u0437\u0430\u043F\u0438\u0441\u0435\u0439: " + entries.length;
     const wanted = String(ssrc);
-    const matches = new Set();
+    const matches = /* @__PURE__ */ new Set();
     for (const [rawKey, rawValue] of entries) {
       const key = String(rawKey);
       const value = rawValue;
       if (allowed.has(key)) {
         if (String(value) === wanted) matches.add(key);
-        if (value && typeof value === "object" &&
-            [value.ssrc, value.audioSSRC, value.audioSsrc, value.audio_ssrc].some(v => String(v) === wanted)) {
+        if (value && typeof value === "object" && [value.ssrc, value.audioSSRC, value.audioSsrc, value.audio_ssrc].some(
+          (v) => String(v) === wanted
+        )) {
           matches.add(key);
         }
       }
@@ -194,168 +283,193 @@ module.exports = class VoiceNormalizer {
       }
       if (value && typeof value === "object") {
         const id = String(value.userId ?? value.user_id ?? value.id ?? "");
-        if (allowed.has(id) &&
-            [value.ssrc, value.audioSSRC, value.audioSsrc, value.audio_ssrc].some(v => String(v) === wanted)) {
+        if (allowed.has(id) && [value.ssrc, value.audioSSRC, value.audioSsrc, value.audio_ssrc].some(
+          (v) => String(v) === wanted
+        )) {
           matches.add(id);
         }
       }
     }
     return matches.size === 1 ? [...matches][0] : "";
   }
-  collect(conn,data) {
-    const map=new Map(); let packets=0,mapped=0;
-    for(const group of Object.values(data?.rtp?.inbound || {})) {
-      const samples=Array.isArray(group)?group:Object.values(group || {});
-      for(const sample of samples) {
-        if(!Number.isFinite(sample?.ssrc) || !Number.isFinite(sample?.audioLevel))continue;
+  collect(conn, data) {
+    const map = /* @__PURE__ */ new Map();
+    let packets = 0, mapped = 0;
+    for (const group of Object.values(data?.rtp?.inbound || {})) {
+      const samples = Array.isArray(group) ? group : Object.values(group || {});
+      for (const sample of samples) {
+        if (!Number.isFinite(sample?.ssrc) || !Number.isFinite(sample?.audioLevel)) continue;
         packets++;
-        const id=this.resolveId(conn,sample.ssrc);
-        if(!id)continue;
+        const id = this.resolveId(conn, sample.ssrc);
+        if (!id) continue;
         mapped++;
-        const existing=map.get(id);
-        if(!existing || sample.audioLevel>existing.level)map.set(id,{level:sample.audioLevel,detected:sample.audioDetected});
+        const existing = map.get(id);
+        if (!existing || sample.audioLevel > existing.level)
+          map.set(id, { level: sample.audioLevel, detected: sample.audioDetected });
       }
     }
-    return {map,packets,mapped};
+    return { map, packets, mapped };
   }
   async tick(generation) {
-    if (!this.enabled || this.busy || this.testRunning || generation!==this.generation) return;
-    this.busy=true;
+    if (!this.enabled || this.busy || this.testRunning || generation !== this.generation) return;
+    this.busy = true;
     try {
-      const conn=this.connect();
-      if(!conn || conn!==this.connection) {
-        this.turnOff();this.status="Соединение изменилось — остановлено";return;
+      const conn = this.connect();
+      if (!conn || conn !== this.connection) {
+        this.turnOff();
+        this.status = "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C \u2014 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E";
+        return;
       }
-      const data=await Promise.resolve(conn.getStats());
-      if(!this.enabled || generation!==this.generation)return;
-      const {map,packets,mapped}=this.collect(conn,data);
-      this.diagnostic.polls++;this.diagnostic.packets=packets;this.diagnostic.mapped=mapped;
-      for(const id of [...this.targets]) {
-        const st=this.states.get(id);
-        if(!st)continue;
-        const input=map.get(id);
-        if(!input) {this.status="SSRC не сопоставлен с выбранным человеком";continue;}
-        const level=input.level;
-        st.lastLevel=level;
-        const now=this.read(id);
-        if(!Number.isFinite(now)||now<=0) {this.status="Нет значения громкости в store";continue;}
-        if(st.lastWrite!==null) {
-          const diff=Math.abs(now-st.lastWrite);
-          if(diff>Math.max(0.04,st.lastWrite*0.04)) {
-            if(performance.now()-st.lastWriteTime < 700) { st.writeUnconfirmed++; continue; }
-            // External/manual slider change: establish a new baseline.
-            st.base=now; st.ema=null; st.voiceCount=0; st.lastWrite=null;
-            st.lastGain=1; st.lastSpeechSampleAt=null; st.talking=false;
-            st.writeUnconfirmed=0;
-            this.status="Ручная громкость изменена — новая база";
+      const data = await Promise.resolve(conn.getStats());
+      if (!this.enabled || generation !== this.generation) return;
+      const { map, packets, mapped } = this.collect(conn, data);
+      this.diagnostic.polls++;
+      this.diagnostic.packets = packets;
+      this.diagnostic.mapped = mapped;
+      for (const id of [...this.targets]) {
+        const st = this.states.get(id);
+        if (!st) continue;
+        const input = map.get(id);
+        if (!input) {
+          this.status = "SSRC \u043D\u0435 \u0441\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D \u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u043C \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u043E\u043C";
+          continue;
+        }
+        const level = input.level;
+        st.lastLevel = level;
+        const now = this.read(id);
+        if (!Number.isFinite(now) || now <= 0) {
+          this.status = "\u041D\u0435\u0442 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438 \u0432 store";
+          continue;
+        }
+        if (st.lastWrite !== null) {
+          const diff = Math.abs(now - st.lastWrite);
+          if (diff > Math.max(0.04, st.lastWrite * 0.04)) {
+            if (performance.now() - st.lastWriteTime < 700) {
+              st.writeUnconfirmed++;
+              continue;
+            }
+            st.base = now;
+            st.ema = null;
+            st.voiceCount = 0;
+            st.lastWrite = null;
+            st.lastGain = 1;
+            st.lastSpeechSampleAt = null;
+            st.talking = false;
+            st.writeUnconfirmed = 0;
+            this.status = "\u0420\u0443\u0447\u043D\u0430\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0430 \u2014 \u043D\u043E\u0432\u0430\u044F \u0431\u0430\u0437\u0430";
             continue;
           }
-          st.writeUnconfirmed=0;this.diagnostic.confirmed++;
+          st.writeUnconfirmed = 0;
+          this.diagnostic.confirmed++;
         }
-        const talking=(input.detected===1 || input.detected===true) && level>=0.006;
-        st.talking=talking;
-        if(talking) {
-          // About 3 seconds for a 63% adjustment in speaking-time average.
-          // Clamp elapsed time so a long silent pause does not erase the history.
-          const time=performance.now();
-          const elapsed=st.lastSpeechSampleAt===null ? 100 :
-            Math.max(50,Math.min(250,time-st.lastSpeechSampleAt));
-          const alpha=1-Math.exp(-elapsed/3000);
-          st.ema=st.ema===null ? level : st.ema*(1-alpha)+level*alpha;
-          st.lastSpeechSampleAt=time;
-          st.voiceCount++;
-        }
-        // HOLD the last gain through silence: do not reset to full volume
-        // immediately before the speaker starts talking again.
-        let gain=talking ? 1 : (Number.isFinite(st.lastGain) ? st.lastGain : 1);
-        if(talking && st.voiceCount>=7 && st.ema!==null) {
-          gain=Math.max(0.45,Math.min(2.0,0.095/Math.max(st.ema,0.006)));
-        } else if(talking && level>0.18) {
-          gain=Math.min(1,0.18/level);
-        }
-        // Fast peak attenuation remains separate from the slow speech average.
-        if(talking && level>0.18)gain=Math.min(gain,0.18/level);
-        gain=Math.max(0.45,Math.min(2.0,gain));
-        const ceiling=this.ceilingFor(st.base);
-        const desired=Math.max(0.02,Math.min(ceiling,st.base*gain));
-        const delta=desired-now;
-        const weight=delta<0?0.65:0.10;
-        const next=Math.max(0.02,Math.min(ceiling,now+delta*weight));
-        st.lastGain=next/st.base;
-        this.diagnostic.latest="audio="+level.toFixed(3)+", среднее="+(st.ema??0).toFixed(3)+
-          ", gain="+st.lastGain.toFixed(2)+"x, store="+now.toFixed(3)+"→"+next.toFixed(3);
-        this.status="Активно · "+this.diagnostic.latest;
-        if(Math.abs(next-now)>0.008) {
-          if(this.write(id,next)) {st.lastWrite=next;st.lastWriteTime=performance.now();}
+        const gain = calculateGain(st, level, input.detected, performance.now());
+        const ceiling = this.ceilingFor(st.base);
+        const desired = Math.max(0.02, Math.min(ceiling, st.base * gain));
+        const delta = desired - now;
+        const weight = delta < 0 ? 0.65 : 0.1;
+        const next = Math.max(0.02, Math.min(ceiling, now + delta * weight));
+        st.lastGain = next / st.base;
+        this.diagnostic.latest = "audio=" + level.toFixed(3) + ", \u0441\u0440\u0435\u0434\u043D\u0435\u0435=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
+        this.status = "\u0410\u043A\u0442\u0438\u0432\u043D\u043E \xB7 " + this.diagnostic.latest;
+        if (Math.abs(next - now) > 8e-3) {
+          if (this.write(id, next)) {
+            st.lastWrite = next;
+            st.lastWriteTime = performance.now();
+          }
         }
       }
-    } catch(e) {this.diagnostic.failures++;this.status="Ошибка: "+String(e?.message||e);}
-    finally {this.busy=false;}
-  }
-  async halfVolumeTest(id) {
-    if(this.enabled||this.testRunning) {this.toast("Сначала выключи автообработку", "warning");return;}
-    if(!this.writer&&!this.resolveWriter()) {this.toast("Не найден модуль громкости", "warning");return;}
-    id=String(id);
-    const before=this.read(id);
-    if(!Number.isFinite(before)||before<=0) {this.toast("Не прочитана громкость", "warning");return;}
-    this.testRunning=true;
-    const target=Math.max(0.01,before*0.5);
-    try {
-      if(!this.write(id,target))throw new Error("не удалось отправить значение");
-      this.status="Тест ×0.5 запущен — 3 секунды пониженной громкости";
-      await new Promise(r=>setTimeout(r,3000));
-      const after=this.read(id);
-      const ok=Number.isFinite(after)&&Math.abs(after-target)<Math.max(0.035,target*0.08);
-      this.status="Тест ×0.5: до="+before.toFixed(4)+", ожидается="+target.toFixed(4)+
-        ", Discord="+String(Number.isFinite(after)?after.toFixed(4):after)+", результат="+(ok?"ОК":"не подтверждён");
-    }catch(e){this.status="Ошибка теста: "+String(e?.message||e);}
-    finally {
-      try {
-        const now=this.read(id);
-        if(Number.isFinite(now)&&Math.abs(now-target)<Math.max(0.035,target*0.08))this.write(id,before);
-      }catch(_){}
-      this.testRunning=false;
+    } catch (e) {
+      this.diagnostic.failures++;
+      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430: " + String(e?.message || e);
+    } finally {
+      this.busy = false;
     }
   }
-  insertNearVolume(tree,item) {
-    const matches=[];const visited=new Set();
-    const walk=(node,depth)=>{
-      if(!node||depth>9||typeof node!=="object"||visited.has(node))return;
-      visited.add(node);
-      if(Array.isArray(node)){node.forEach(x=>walk(x,depth+1));return;}
-      const children=node.props?.children;
-      if(Array.isArray(children)) {
-        children.forEach((child,index)=>{
-          const p=child?.props||{};
-          const label=[p.id,p.label,p.title].filter(v=>typeof v==="string").join(" ").toLowerCase();
-          let weight=0;
-          if(/volume|громкост/.test(label))weight=4;
-          else if(/mute|заглуш/.test(label))weight=2;
-          if(weight)matches.push({children,index,weight});
-          walk(child,depth+1);
-        });
-      }else walk(children,depth+1);
-    };
-    walk(tree,0);
-    matches.sort((a,b)=>b.weight-a.weight);
+  async halfVolumeTest(id) {
+    if (this.enabled || this.testRunning) {
+      this.toast("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043A\u043B\u044E\u0447\u0438 \u0430\u0432\u0442\u043E\u043E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0443", "warning");
+      return;
+    }
+    if (!this.writer && !this.resolveWriter()) {
+      this.toast("\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u043C\u043E\u0434\u0443\u043B\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438", "warning");
+      return;
+    }
+    id = String(id);
+    const before = this.read(id);
+    if (!Number.isFinite(before) || before <= 0) {
+      this.toast("\u041D\u0435 \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u043D\u0430 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C", "warning");
+      return;
+    }
+    this.testRunning = true;
+    const target = Math.max(0.01, before * 0.5);
     try {
-      if(matches.length){const m=matches[0];m.children.splice(m.index+1,0,item);}
-      else if(Array.isArray(tree?.props?.children))tree.props.children.unshift(item);
-    }catch(_){}
+      if (!this.write(id, target)) throw new Error("\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435");
+      this.status = "\u0422\u0435\u0441\u0442 \xD70.5 \u0437\u0430\u043F\u0443\u0449\u0435\u043D \u2014 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u043F\u043E\u043D\u0438\u0436\u0435\u043D\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438";
+      await new Promise((r) => setTimeout(r, 3e3));
+      const after = this.read(id);
+      const ok = Number.isFinite(after) && Math.abs(after - target) < Math.max(0.035, target * 0.08);
+      this.status = "\u0422\u0435\u0441\u0442 \xD70.5: \u0434\u043E=" + before.toFixed(4) + ", \u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F=" + target.toFixed(4) + ", Discord=" + String(Number.isFinite(after) ? after.toFixed(4) : after) + ", \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442=" + (ok ? "\u041E\u041A" : "\u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D");
+    } catch (e) {
+      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430 \u0442\u0435\u0441\u0442\u0430: " + String(e?.message || e);
+    } finally {
+      try {
+        const now = this.read(id);
+        if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+          this.write(id, before);
+      } catch (_) {
+      }
+      this.testRunning = false;
+    }
+  }
+  insertNearVolume(tree, item) {
+    const matches = [];
+    const visited = /* @__PURE__ */ new Set();
+    const walk = (node, depth) => {
+      if (!node || depth > 9 || typeof node !== "object" || visited.has(node)) return;
+      visited.add(node);
+      if (Array.isArray(node)) {
+        node.forEach((x) => walk(x, depth + 1));
+        return;
+      }
+      const children = node.props?.children;
+      if (Array.isArray(children)) {
+        children.forEach((child, index) => {
+          const p = child?.props || {};
+          const label = [p.id, p.label, p.title].filter((v) => typeof v === "string").join(" ").toLowerCase();
+          let weight = 0;
+          if (/volume|громкост/.test(label)) weight = 4;
+          else if (/mute|заглуш/.test(label)) weight = 2;
+          if (weight) matches.push({ children, index, weight });
+          walk(child, depth + 1);
+        });
+      } else walk(children, depth + 1);
+    };
+    walk(tree, 0);
+    matches.sort((a, b) => b.weight - a.weight);
+    try {
+      if (matches.length) {
+        const m = matches[0];
+        m.children.splice(m.index + 1, 0, item);
+      } else if (Array.isArray(tree?.props?.children)) tree.props.children.unshift(item);
+    } catch (_) {
+    }
   }
   getLiveSnapshot(id) {
     const st = this.states.get(String(id));
     const active = this.targets.has(String(id));
     const actual = this.read(id);
     const base = st?.base;
-    const relative = Number.isFinite(actual) && Number.isFinite(base) && base > 0
-      ? actual / base : 1;
+    const relative = Number.isFinite(actual) && Number.isFinite(base) && base > 0 ? actual / base : 1;
     const ratio = Math.max(0, Math.min(2, relative));
     const gainDb = ratio > 0 ? 20 * Math.log10(ratio) : -60;
     const level = Number.isFinite(st?.lastLevel) ? st.lastLevel : 0;
     const average = Number.isFinite(st?.ema) ? st.ema : 0;
     return {
-      active, ratio, gainDb, level, average,
+      active,
+      ratio,
+      gainDb,
+      level,
+      average,
       hasAudio: Boolean(st && st.voiceCount > 0),
       volumeKnown: Number.isFinite(actual),
       current: actual,
@@ -365,155 +479,214 @@ module.exports = class VoiceNormalizer {
   menuMeterComponent() {
     if (this._menuMeter) return this._menuMeter;
     const R = BdApi.React;
-    this._menuMeter = ({userId}) => {
+    this._menuMeter = ({ userId }) => {
       const [, rerender] = R.useState(0);
       R.useEffect(() => {
-        const handle = setInterval(() => rerender(t => t + 1), 150);
+        const handle = setInterval(() => rerender((t) => t + 1), 150);
         return () => clearInterval(handle);
       }, []);
       const data = this.getLiveSnapshot(userId);
-      const text = (str, style={}) => R.createElement("div", {style}, str);
-      const bar = (value, color) => R.createElement("div", {
-        style:{height:6,background:"var(--background-tertiary)",borderRadius:6,overflow:"hidden",width:"100%"}
-      }, R.createElement("div", {style:{
-        width:(Math.max(0, Math.min(1, value))*100).toFixed(1)+"%",
-        height:"100%",background:color,borderRadius:6,transition:"width 150ms linear"
-      }}));
-      return R.createElement("div", {
-        style:{minWidth:205,maxWidth:250,padding:"7px 11px",display:"flex",flexDirection:"column",gap:5,
-          fontSize:11,color:"var(--text-normal)",pointerEvents:"none"},
-        "aria-label":"VoiceNormalizer: индикатор голоса"
-      },
-        text(data.active ? "Нормализация: включена" : "Нормализация: выключена",
-          {fontWeight:600,color:data.active ? "var(--text-positive)" : "var(--text-muted)"}),
-        text("Входящий уровень: "+(data.level*100).toFixed(1)+"%"),
-        bar(data.level,"var(--brand-500,#5865f2)"),
-        text("Средний уровень: "+(data.average*100).toFixed(1)+"%"),
-        bar(data.average,"#44bba4"),
-        text(data.active && data.volumeKnown && Number.isFinite(data.base)
-          ? "Громкость: "+(data.ratio*100).toFixed(0)+"% от исходной · "+
-            (data.gainDb>=0?"+":"")+data.gainDb.toFixed(1)+" дБ"
-          : "Включи обработку, чтобы увидеть изменение"),
-        bar(data.active ? data.ratio/2 : 0.5,"#faa61a")
+      const text = (str, style = {}) => R.createElement("div", { style }, str);
+      const bar = (value, color) => R.createElement(
+        "div",
+        {
+          style: {
+            height: 6,
+            background: "var(--background-tertiary)",
+            borderRadius: 6,
+            overflow: "hidden",
+            width: "100%"
+          }
+        },
+        R.createElement("div", {
+          style: {
+            width: (Math.max(0, Math.min(1, value)) * 100).toFixed(1) + "%",
+            height: "100%",
+            background: color,
+            borderRadius: 6,
+            transition: "width 150ms linear"
+          }
+        })
+      );
+      return R.createElement(
+        "div",
+        {
+          style: {
+            minWidth: 205,
+            maxWidth: 250,
+            padding: "7px 11px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 5,
+            fontSize: 11,
+            color: "var(--text-normal)",
+            pointerEvents: "none"
+          },
+          "aria-label": "VoiceNormalizer: \u0438\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u0433\u043E\u043B\u043E\u0441\u0430"
+        },
+        text(data.active ? "\u041D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0430" : "\u041D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u0430", {
+          fontWeight: 600,
+          color: data.active ? "var(--text-positive)" : "var(--text-muted)"
+        }),
+        text("\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C: " + (data.level * 100).toFixed(1) + "%"),
+        bar(data.level, "var(--brand-500,#5865f2)"),
+        text("\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C: " + (data.average * 100).toFixed(1) + "%"),
+        bar(data.average, "#44bba4"),
+        text(
+          data.active && data.volumeKnown && Number.isFinite(data.base) ? "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C: " + (data.ratio * 100).toFixed(0) + "% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \xB7 " + (data.gainDb >= 0 ? "+" : "") + data.gainDb.toFixed(1) + " \u0434\u0411" : "\u0412\u043A\u043B\u044E\u0447\u0438 \u043E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0435"
+        ),
+        bar(data.active ? data.ratio / 2 : 0.5, "#faa61a")
       );
     };
     return this._menuMeter;
   }
   installMenus() {
-    for(const nav of ["user-context","user-profile-actions"]) {
+    for (const nav of ["user-context", "user-profile-actions"]) {
       try {
-        const unpatch=BdApi.ContextMenu.patch(nav,(tree,props)=>{
-          const id=props?.user?.id;
-          if(!id||id===BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id)return;
-          const item=BdApi.ContextMenu.buildItem({
-            id:"voice-normalizer-toggle",type:"toggle",label:"Выравнивать громкость голоса",
-            checked:this.targets.has(String(id)),
-            action:()=>this.select(id,!this.targets.has(String(id)))
+        const unpatch = BdApi.ContextMenu.patch(nav, (tree, props) => {
+          const id = props?.user?.id;
+          if (!id || id === BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id) return;
+          const item = BdApi.ContextMenu.buildItem({
+            id: "voice-normalizer-toggle",
+            type: "toggle",
+            label: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430",
+            checked: this.targets.has(String(id)),
+            action: () => this.select(id, !this.targets.has(String(id)))
           });
-          // Embed a live React meter close to Discord's volume control.
-          // React unmounting automatically clears its refresh interval when the menu closes.
           try {
             const meter = BdApi.ContextMenu.buildItem({
-              type:"control",
-              id:"voice-normalizer-live-meter",
-              control:() => BdApi.React.createElement(this.menuMeterComponent(), {userId:String(id)})
+              type: "control",
+              id: "voice-normalizer-live-meter",
+              control: () => BdApi.React.createElement(this.menuMeterComponent(), { userId: String(id) })
             });
-            if (meter) this.insertNearVolume(tree,meter);
+            if (meter) this.insertNearVolume(tree, meter);
           } catch (error) {
-            // The standard toggle remains available if this menu lacks ControlItem support.
-            this.status="Индикатор в ПКМ недоступен: "+String(error?.message||error);
+            this.status = "\u0418\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u0432 \u041F\u041A\u041C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D: " + String(error?.message || error);
           }
-          this.insertNearVolume(tree,item);
+          this.insertNearVolume(tree, item);
         });
-        if(typeof unpatch==="function")this.unpatches.push(unpatch);
-      }catch(_){}
+        if (typeof unpatch === "function") this.unpatches.push(unpatch);
+      } catch (_) {
+      }
     }
   }
   getSettingsPanel() {
-    const root=document.createElement("div");
-    root.style.cssText="padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
-    const title=document.createElement("h3");title.textContent="VoiceNormalizer · 1.0.7 Alpha";title.style.margin="0";
-    const help=document.createElement("p");
-    help.textContent="ПКМ на участнике → Выравнивать громкость голоса. Средняя громкость обновляется только во время речи. При молчании усиление не увеличивается.";
-    help.style.cssText="margin:0;color:var(--text-muted);line-height:1.4";
-    const livePanel=document.createElement("div");
-    livePanel.style.cssText="display:flex;flex-direction:column;gap:8px";
-    const debug=document.createElement("pre");
-    debug.style.cssText="white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:9px;background:var(--background-secondary);font-size:12px";
-    const people=document.createElement("div");people.style.cssText="display:flex;flex-direction:column;gap:8px;max-height:240px;overflow:auto";
-    const actions=document.createElement("div");actions.style.cssText="display:flex;gap:8px;flex-wrap:wrap";
-    const makeButton=(text,fn,secondary=false)=>{
-      const b=document.createElement("button");b.type="button";b.textContent=text;
-      b.style.cssText="padding:9px 12px;border-radius:9px;border:0;cursor:pointer;font-weight:600;color:white;background:"+
-       (secondary?"var(--background-tertiary)":"var(--brand-500,#5865f2)");
-      b.onclick=fn;return b;
+    const root = document.createElement("div");
+    root.style.cssText = "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
+    const title = document.createElement("h3");
+    title.textContent = "VoiceNormalizer \xB7 1.0.7 Alpha";
+    title.style.margin = "0";
+    const help = document.createElement("p");
+    help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
+    help.style.cssText = "margin:0;color:var(--text-muted);line-height:1.4";
+    const livePanel = document.createElement("div");
+    livePanel.style.cssText = "display:flex;flex-direction:column;gap:8px";
+    const debug = document.createElement("pre");
+    debug.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:9px;background:var(--background-secondary);font-size:12px";
+    const people = document.createElement("div");
+    people.style.cssText = "display:flex;flex-direction:column;gap:8px;max-height:240px;overflow:auto";
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
+    const makeButton = (text, fn, secondary = false) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.style.cssText = "padding:9px 12px;border-radius:9px;border:0;cursor:pointer;font-weight:600;color:white;background:" + (secondary ? "var(--background-tertiary)" : "var(--brand-500,#5865f2)");
+      b.onclick = fn;
+      return b;
     };
-    const refresh=()=>{
+    const refresh = () => {
       people.replaceChildren();
-      const list=this.participants();
-      for(const person of list){
-        const line=document.createElement("div");line.style.cssText="display:flex;gap:8px;align-items:center;padding:9px;background:var(--background-secondary);border-radius:9px";
-        const name=document.createElement("span");name.textContent=person.name;name.style.flex="1";
-        const test=makeButton("Тест ×0.5",()=>this.halfVolumeTest(person.id).then(render),true);
-        test.disabled=this.enabled||this.testRunning;
-        const enabled=this.targets.has(person.id);
-        const toggle=makeButton(enabled?"Выключить":"Включить",()=>{
-          this.select(person.id,!enabled);refresh();render();
+      const list = this.participants();
+      for (const person of list) {
+        const line = document.createElement("div");
+        line.style.cssText = "display:flex;gap:8px;align-items:center;padding:9px;background:var(--background-secondary);border-radius:9px";
+        const name = document.createElement("span");
+        name.textContent = person.name;
+        name.style.flex = "1";
+        const test = makeButton(
+          "\u0422\u0435\u0441\u0442 \xD70.5",
+          () => this.halfVolumeTest(person.id).then(render),
+          true
+        );
+        test.disabled = this.enabled || this.testRunning;
+        const enabled = this.targets.has(person.id);
+        const toggle = makeButton(enabled ? "\u0412\u044B\u043A\u043B\u044E\u0447\u0438\u0442\u044C" : "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C", () => {
+          this.select(person.id, !enabled);
+          refresh();
+          render();
         });
-        line.append(name,test,toggle);people.append(line);
+        line.append(name, test, toggle);
+        people.append(line);
       }
-      if(!list.length)people.textContent="Участники не найдены. Проверь голосовой канал.";
+      if (!list.length) people.textContent = "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B.";
     };
-    const render=()=>{
+    const render = () => {
       livePanel.replaceChildren();
-      const roster=new Map(this.participants().map(p=>[p.id,p.name]));
+      const roster = new Map(this.participants().map((p) => [p.id, p.name]));
       if (!this.targets.size) {
-        const empty=document.createElement("div");
-        empty.textContent="Живой индикатор появится после включения нормализации.";
-        empty.style.cssText="color:var(--text-muted);font-size:12px";
+        const empty = document.createElement("div");
+        empty.textContent = "\u0416\u0438\u0432\u043E\u0439 \u0438\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u043D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u0438.";
+        empty.style.cssText = "color:var(--text-muted);font-size:12px";
         livePanel.append(empty);
       }
       for (const id of this.targets) {
-        const v=this.getLiveSnapshot(id);
-        const card=document.createElement("div");
-        card.style.cssText="background:var(--background-secondary);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px";
-        const name=document.createElement("div");
-        name.textContent=roster.get(id)||"Выбранный пользователь";
-        name.style.cssText="font-weight:700;font-size:13px";
-        const detail=document.createElement("div");
-        detail.style.cssText="font-size:12px;color:var(--text-muted)";
-        detail.textContent="Голос "+(v.level*100).toFixed(1)+"% · Среднее "+(v.average*100).toFixed(1)+
-          "% · Громкость "+(v.ratio*100).toFixed(0)+"% от исходной ("+
-          (v.gainDb>=0?"+":"")+v.gainDb.toFixed(1)+" дБ)";
-        const track=document.createElement("div");
-        track.style.cssText="height:7px;overflow:hidden;border-radius:6px;background:var(--background-tertiary);position:relative";
-        const fill=document.createElement("div");
-        fill.style.cssText="height:100%;background:var(--brand-500,#5865f2);transition:width 200ms";
-        fill.style.width=(Math.min(100,Math.max(0,v.ratio*50))).toFixed(1)+"%";
-        const baseMark=document.createElement("div");
-        baseMark.style.cssText="position:absolute;left:50%;top:0;height:100%;width:2px;background:var(--text-normal);opacity:.55";
-        track.append(fill,baseMark);
-        card.append(name,detail,track);livePanel.append(card);
+        const v = this.getLiveSnapshot(id);
+        const card = document.createElement("div");
+        card.style.cssText = "background:var(--background-secondary);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px";
+        const name = document.createElement("div");
+        name.textContent = roster.get(id) || "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0439 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C";
+        name.style.cssText = "font-weight:700;font-size:13px";
+        const detail = document.createElement("div");
+        detail.style.cssText = "font-size:12px;color:var(--text-muted)";
+        detail.textContent = "\u0413\u043E\u043B\u043E\u0441 " + (v.level * 100).toFixed(1) + "% \xB7 \u0421\u0440\u0435\u0434\u043D\u0435\u0435 " + (v.average * 100).toFixed(1) + "% \xB7 \u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C " + (v.ratio * 100).toFixed(0) + "% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 (" + (v.gainDb >= 0 ? "+" : "") + v.gainDb.toFixed(1) + " \u0434\u0411)";
+        const track = document.createElement("div");
+        track.style.cssText = "height:7px;overflow:hidden;border-radius:6px;background:var(--background-tertiary);position:relative";
+        const fill = document.createElement("div");
+        fill.style.cssText = "height:100%;background:var(--brand-500,#5865f2);transition:width 200ms";
+        fill.style.width = Math.min(100, Math.max(0, v.ratio * 50)).toFixed(1) + "%";
+        const baseMark = document.createElement("div");
+        baseMark.style.cssText = "position:absolute;left:50%;top:0;height:100%;width:2px;background:var(--text-normal);opacity:.55";
+        track.append(fill, baseMark);
+        card.append(name, detail, track);
+        livePanel.append(card);
       }
-      debug.textContent=[
-        "Состояние: "+this.status,
-        "Модуль: "+this.writerInfo,
-        "Выбрано: "+this.targets.size+", опросов: "+this.diagnostic.polls,
-        "Входящих потоков: "+this.diagnostic.packets+", определены пользователи: "+this.diagnostic.mapped,
-        "Записей громкости: "+this.diagnostic.writes+", подтверждений: "+this.diagnostic.confirmed,
-        "Сопоставление: "+this.mappingDebug,
-        "Последняя ошибка записи: "+this.lastWriteError,
-        "Последнее: "+this.diagnostic.latest
+      debug.textContent = [
+        "\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435: " + this.status,
+        "\u041C\u043E\u0434\u0443\u043B\u044C: " + this.writerInfo,
+        "\u0412\u044B\u0431\u0440\u0430\u043D\u043E: " + this.targets.size + ", \u043E\u043F\u0440\u043E\u0441\u043E\u0432: " + this.diagnostic.polls,
+        "\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0445 \u043F\u043E\u0442\u043E\u043A\u043E\u0432: " + this.diagnostic.packets + ", \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u044B \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0438: " + this.diagnostic.mapped,
+        "\u0417\u0430\u043F\u0438\u0441\u0435\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: " + this.diagnostic.writes + ", \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0439: " + this.diagnostic.confirmed,
+        "\u0421\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D\u0438\u0435: " + this.mappingDebug,
+        "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438: " + this.lastWriteError,
+        "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435: " + this.diagnostic.latest
       ].join("\n");
     };
-    const stop=makeButton("■ Отключить для всех",()=>{this.turnOff();refresh();render();},true);
-    const reload=makeButton("↻ Обновить участников",()=>{refresh();render();});
-    actions.append(stop,reload);
-    root.append(title,help,livePanel,people,actions,debug);refresh();render();
-    const timer=setInterval(()=>{
-      if(!root.isConnected){clearInterval(timer);this.panels.delete(timer);return;}
+    const stop = makeButton(
+      "\u25A0 \u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
+      () => {
+        this.turnOff();
+        refresh();
+        render();
+      },
+      true
+    );
+    const reload = makeButton("\u21BB \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432", () => {
+      refresh();
       render();
-    },400);
+    });
+    actions.append(stop, reload);
+    root.append(title, help, livePanel, people, actions, debug);
+    refresh();
+    render();
+    const timer = setInterval(() => {
+      if (!root.isConnected) {
+        clearInterval(timer);
+        this.panels.delete(timer);
+        return;
+      }
+      render();
+    }, 400);
     this.panels.add(timer);
     return root;
   }
