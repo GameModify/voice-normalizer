@@ -1,0 +1,13 @@
+{
+  "name": "voice-normalizer",
+  "version": "1.0.7-alpha",
+  "private": true,
+  "description": "Experimental automatic voice leveling for BetterDiscord",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node --check VoiceNormalizer.plugin.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
