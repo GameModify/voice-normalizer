@@ -7,7 +7,7 @@ const metadata = `/**
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.0.7-alpha
+ * @version 1.1.0-alpha
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */`;
 const output = path.join(root, "VoiceNormalizer.plugin.js");

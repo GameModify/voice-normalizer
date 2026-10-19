@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.0.7-alpha
+ * @version 1.1.0-alpha
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -14,10 +14,28 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
+// src/audio/speech-activity.js
+var require_speech_activity = __commonJS({
+  "src/audio/speech-activity.js"(exports2, module2) {
+    "use strict";
+    var MIN_ACTIVITY_LEVEL = 8e-3;
+    var REQUIRED_ACTIVE_POLLS = 3;
+    function detectSpeech(state, level, detected) {
+      const active = (detected === true || detected === 1) && level >= MIN_ACTIVITY_LEVEL;
+      state.activityPolls = active ? Math.min(REQUIRED_ACTIVE_POLLS, state.activityPolls + 1) : 0;
+      const confirmed = active && state.activityPolls >= REQUIRED_ACTIVE_POLLS;
+      state.talking = confirmed;
+      return { active, confirmed };
+    }
+    module2.exports = { detectSpeech, MIN_ACTIVITY_LEVEL, REQUIRED_ACTIVE_POLLS };
+  }
+});
+
 // src/audio/leveler.js
 var require_leveler = __commonJS({
   "src/audio/leveler.js"(exports2, module2) {
     "use strict";
+    var { detectSpeech } = require_speech_activity();
     function createUserState2(base) {
       return {
         base,
@@ -28,29 +46,30 @@ var require_leveler = __commonJS({
         writeUnconfirmed: 0,
         lastLevel: 0,
         lastGain: 1,
+        stableGain: 1,
+        activityPolls: 0,
         lastSpeechSampleAt: null,
         talking: false
       };
     }
-    function calculateGain2(st, level, detected, timestamp) {
-      const talking = (detected === 1 || detected === true) && level >= 6e-3;
-      st.talking = talking;
-      if (talking) {
-        const time = timestamp;
-        const elapsed = st.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, time - st.lastSpeechSampleAt));
+    function calculateGain2(state, level, detected, timestamp) {
+      const { active, confirmed } = detectSpeech(state, level, detected);
+      if (confirmed) {
+        const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
         const alpha = 1 - Math.exp(-elapsed / 3e3);
-        st.ema = st.ema === null ? level : st.ema * (1 - alpha) + level * alpha;
-        st.lastSpeechSampleAt = time;
-        st.voiceCount++;
+        state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
+        state.lastSpeechSampleAt = timestamp;
+        state.voiceCount++;
       }
-      let gain = talking ? 1 : Number.isFinite(st.lastGain) ? st.lastGain : 1;
-      if (talking && st.voiceCount >= 7 && st.ema !== null) {
-        gain = Math.max(0.45, Math.min(2, 0.095 / Math.max(st.ema, 6e-3)));
-      } else if (talking && level > 0.18) {
+      let gain = state.stableGain;
+      if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
+        gain = Math.max(0.45, Math.min(2, 0.095 / Math.max(state.ema, 6e-3)));
+      } else if (confirmed && level > 0.18) {
         gain = Math.min(1, 0.18 / level);
       }
-      if (talking && level > 0.18) gain = Math.min(gain, 0.18 / level);
+      if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
       gain = Math.max(0.45, Math.min(2, gain));
+      if (confirmed) state.stableGain = gain;
       return gain;
     }
     module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2 };
@@ -353,6 +372,8 @@ module.exports = class VoiceNormalizer {
             st.voiceCount = 0;
             st.lastWrite = null;
             st.lastGain = 1;
+            st.stableGain = 1;
+            st.activityPolls = 0;
             st.lastSpeechSampleAt = null;
             st.talking = false;
             st.writeUnconfirmed = 0;
@@ -574,7 +595,7 @@ module.exports = class VoiceNormalizer {
     const root = document.createElement("div");
     root.style.cssText = "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
     const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer \xB7 1.0.7 Alpha";
+    title.textContent = "VoiceNormalizer \xB7 1.0.8 Alpha";
     title.style.margin = "0";
     const help = document.createElement("p");
     help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
