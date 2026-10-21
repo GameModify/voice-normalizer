@@ -2,7 +2,10 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const Plugin = require("../VoiceNormalizer.plugin.js");
 
+const { mockClock } = require("./clock.cjs");
+
 function fixture(t, saved = ["friend"]) {
+  const advanceClock = mockClock(t);
   let connection;
   let participants = ["friend"];
   const volume = new Map([["friend", 100]]);
@@ -58,9 +61,12 @@ function fixture(t, saved = ["friend"]) {
     connect() {
       connection = {
         getUserIdBySsrc: () => "friend",
-        getStats: () => ({
-          rtp: { inbound: { audio: [{ ssrc: 123, audioLevel: 0.4, audioDetected: 1 }] } },
-        }),
+        getStats: () => {
+          advanceClock();
+          return {
+            rtp: { inbound: { audio: [{ ssrc: 123, audioLevel: 0.4, audioDetected: 1 }] } },
+          };
+        },
       };
       return connection;
     },
