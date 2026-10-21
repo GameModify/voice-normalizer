@@ -50,3 +50,7 @@ Percentages in the table refer to Discord's internal volume relative to the base
 If something goes wrong, [open an issue](https://github.com/GameModify/voice-normalizer/issues/new) with the plugin version, selected mode, steps to reproduce, and expected result.
 
 [Detailed settings (Russian)](./docs/SETTINGS.md) · [Roadmap (Russian)](./docs/ROADMAP.md) · [Development (Russian)](./CONTRIBUTING.md)
+
+## License
+
+[MIT](./LICENSE) © 2026 GameModify.
