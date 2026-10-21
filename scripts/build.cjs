@@ -9,7 +9,7 @@ const metadata = `/**
  * @author GameModify
  * @authorLink https://github.com/GameModify
  * @version ${version}
- * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
+ * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls.
  */`;
 const output = path.join(root, "VoiceNormalizer.plugin.js");
 

@@ -9,7 +9,7 @@ Author: **GameModify** · [GameModify](https://github.com/GameModify)
 ## Installation
 
 1. Install [BetterDiscord](https://betterdiscord.app/).
-2. [Download VoiceNormalizer.plugin.js](https://github.com/GameModify/voice-normalizer/raw/refs/heads/main/VoiceNormalizer.plugin.js) and place it in the plugins folder. On Windows: `%APPDATA%\BetterDiscord\plugins`.
+2. [Download VoiceNormalizer.plugin.js](https://github.com/GameModify/voice-normalizer/releases/latest/download/VoiceNormalizer.plugin.js) and place it in the plugins folder. On Windows: `%APPDATA%\BetterDiscord\plugins`.
 3. Enable VoiceNormalizer in BetterDiscord settings.
 
 You only need the plugin file. Downloading the whole repository or installing Node.js is unnecessary.
