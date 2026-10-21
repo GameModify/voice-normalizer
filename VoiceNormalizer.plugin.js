@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.1
+ * @version 1.3.0-beta.2
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -341,7 +341,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.1",
+      version: "1.3.0-beta.2",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -615,6 +615,7 @@ var require_settings_panel = __commonJS({
           mode.update(plugin.preferences.mode);
           controls.refresh(plugin.settings);
           const roster = plugin.participants();
+          const names = new Map(roster.map((person) => [person.id, person.name]));
           const currentIds = new Set(roster.map((person) => person.id));
           availableEmpty.style.display = roster.length ? "none" : "";
           for (const [id, row] of availableRows) {
@@ -700,9 +701,9 @@ var require_settings_panel = __commonJS({
               cards.set(id, card);
             }
             const user = BdApi.Webpack.getStore("UserStore")?.getUser?.(id);
-            card.name.textContent = roster.find((person) => person.id === id)?.name || user?.globalName || user?.username || id;
+            card.name.textContent = names.get(id) || user?.globalName || user?.username || id;
             const selected = plugin.isSelected(id);
-            card.status.textContent = t(plugin.userStatus(id));
+            card.status.textContent = t(plugin.userStatus(id, roster));
             card.detail.textContent = selected && plugin.states.has(id) ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0)) : "";
             card.profile.update(plugin.profileFor(id));
             card.toggle.textContent = t(selected ? "disable" : "enable");
@@ -741,12 +742,47 @@ var require_settings_panel = __commonJS({
   }
 });
 
+// src/discord/stats-request.js
+var require_stats_request = __commonJS({
+  "src/discord/stats-request.js"(exports2, module2) {
+    "use strict";
+    function createStatsRequest2(connection, timeoutMs = 2e3) {
+      let cancel;
+      const promise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback(value);
+        };
+        const timer = setTimeout(
+          () => finish(reject, new Error("Voice statistics timed out")),
+          timeoutMs
+        );
+        cancel = () => finish(resolve, null);
+        try {
+          Promise.resolve(connection.getStats()).then(
+            (data) => finish(resolve, data),
+            (error) => finish(reject, error)
+          );
+        } catch (error) {
+          finish(reject, error);
+        }
+      });
+      return { promise, cancel: () => cancel() };
+    }
+    module2.exports = { createStatsRequest: createStatsRequest2 };
+  }
+});
+
 // src/index.js
 var { createUserState, calculateGain } = require_leveler();
 var { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require_settings();
 var { normalizePreferences } = require_preferences();
 var { languageFor, translate } = require_i18n();
 var { createSettingsPanel } = require_settings_panel();
+var { createStatsRequest } = require_stats_request();
 module.exports = class VoiceNormalizer {
   constructor() {
     this.targets = /* @__PURE__ */ new Set();
@@ -754,7 +790,7 @@ module.exports = class VoiceNormalizer {
     this.enabled = false;
     this.started = false;
     this.timer = null;
-    this.busy = false;
+    this.pendingStats = null;
     this.generation = 0;
     this.connection = null;
     this.writer = null;
@@ -772,6 +808,7 @@ module.exports = class VoiceNormalizer {
       latest: "\u2014"
     };
     this.testRunning = false;
+    this.testBaseline = null;
     this.maxInternalVolume = 200;
     this.settings = { ...DEFAULT_SETTINGS };
     this.preferences = normalizePreferences();
@@ -873,10 +910,11 @@ module.exports = class VoiceNormalizer {
     this.toast(this.t("resetDone"));
     this.refreshPanels();
   }
-  userStatus(id) {
+  userStatus(id, participants = null) {
     if (!this.started || !this.isSelected(id)) return "off";
     if (!this.connection) return "waitingChannel";
-    if (!this.participants().some((person) => person.id === String(id))) return "waitingUser";
+    const roster = participants ?? this.participants();
+    if (!roster.some((person) => person.id === String(id))) return "waitingUser";
     if (this.read(id) === 0) return "muted";
     const state = this.states.get(String(id));
     if (!state || performance.now() - (state.sampleAt ?? 0) > 1500) return "unavailable";
@@ -911,6 +949,8 @@ module.exports = class VoiceNormalizer {
     this.generation++;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.pendingStats?.cancel();
+    this.pendingStats = null;
     this.resetConnection();
     this.status = this.t("off");
   }
@@ -1020,8 +1060,14 @@ module.exports = class VoiceNormalizer {
     }
   }
   write(id, value) {
-    if (!this.writer || !Number.isFinite(value) || value < 0 || value > this.maxInternalVolume) {
-      this.lastWriteError = "Value " + String(value) + " outside allowed range 0\u2013" + this.maxInternalVolume;
+    id = String(id);
+    const limit = Math.max(
+      this.maxInternalVolume,
+      this.states.get(id)?.base || 0,
+      this.testBaseline?.id === id ? this.testBaseline.base : 0
+    );
+    if (!this.writer || !Number.isFinite(value) || value < 0 || value > limit) {
+      this.lastWriteError = "Value " + String(value) + " outside allowed range 0\u2013" + limit;
       return false;
     }
     try {
@@ -1036,13 +1082,16 @@ module.exports = class VoiceNormalizer {
     }
   }
   ceilingFor(base) {
-    return base > 4 ? 200 : Math.min(4, base * 2);
+    return base > 4 ? Math.max(200, base) : Math.min(4, base * 2);
+  }
+  volumeTolerance(reference, relative, baseline, absolute) {
+    return Math.max(Math.min(absolute, baseline * 0.01), reference * relative);
   }
   restore(id) {
     const st = this.states.get(id);
     if (!st) return;
     const now = this.read(id);
-    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= Math.max(0.03, st.lastWrite * 0.035)) {
+    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= this.volumeTolerance(st.lastWrite, 0.035, st.base, 0.03)) {
       this.write(id, st.base);
     }
     this.states.delete(id);
@@ -1133,8 +1182,9 @@ module.exports = class VoiceNormalizer {
     return { map, packets, mapped };
   }
   async tick(generation) {
-    if (!this.enabled || this.busy || this.testRunning || generation !== this.generation) return;
-    this.busy = true;
+    if (!this.enabled || this.pendingStats || this.testRunning || generation !== this.generation)
+      return;
+    let request;
     try {
       const conn = this.connect();
       if (conn !== this.connection) this.resetConnection(conn);
@@ -1150,8 +1200,10 @@ module.exports = class VoiceNormalizer {
         this.status = this.t("writerWaiting");
         return;
       }
-      const data = await Promise.resolve(conn.getStats());
-      if (!this.enabled || generation !== this.generation) return;
+      request = createStatsRequest(conn);
+      this.pendingStats = request;
+      const data = await request.promise;
+      if (!data || !this.enabled || generation !== this.generation) return;
       if (this.connect() !== conn) {
         this.resetConnection();
         return;
@@ -1188,7 +1240,7 @@ module.exports = class VoiceNormalizer {
         st.sampleAt = performance.now();
         if (st.lastWrite !== null) {
           const diff = Math.abs(now - st.lastWrite);
-          if (diff > Math.max(0.04, st.lastWrite * 0.04)) {
+          if (diff > this.volumeTolerance(st.lastWrite, 0.04, st.base, 0.04)) {
             if (performance.now() - st.lastWriteTime < 700) {
               st.writeUnconfirmed++;
               continue;
@@ -1215,7 +1267,7 @@ module.exports = class VoiceNormalizer {
           this.ceilingFor(st.base),
           settings.mode === "attenuate" ? st.base : Infinity
         );
-        const floor = Math.min(0.02, st.base);
+        const floor = Math.min(0.02, st.base * settings.minGain);
         const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
         const delta = desired - now;
         const weight = delta < 0 ? settings.attack : settings.release;
@@ -1225,7 +1277,7 @@ module.exports = class VoiceNormalizer {
         this.status = this.t(
           !st.talking ? "waitingSpeech" : st.voiceCount < 7 ? "learning" : "active"
         );
-        if (Math.abs(next - now) > 8e-3) {
+        if (Math.abs(next - now) > Math.min(8e-3, st.base * 5e-3)) {
           if (this.write(id, next)) {
             st.lastWrite = next;
             st.lastWriteTime = performance.now();
@@ -1233,10 +1285,11 @@ module.exports = class VoiceNormalizer {
         }
       }
     } catch (e) {
+      if (!this.enabled || generation !== this.generation) return;
       this.diagnostic.failures++;
       this.status = this.t("error", String(e?.message || e));
     } finally {
-      this.busy = false;
+      if (this.pendingStats === request) this.pendingStats = null;
     }
   }
   async halfVolumeTest(id) {
@@ -1255,7 +1308,9 @@ module.exports = class VoiceNormalizer {
       return;
     }
     this.testRunning = true;
-    const target = Math.max(0.01, before * 0.5);
+    this.testBaseline = { id, base: before };
+    const target = before * 0.5;
+    const tolerance = this.volumeTolerance(target, 0.08, before, 0.035);
     try {
       if (!this.write(id, target)) throw new Error(this.lastWriteError);
       this.status = this.t("testStarted");
@@ -1264,24 +1319,25 @@ module.exports = class VoiceNormalizer {
         this.cancelTest = () => {
           clearTimeout(timer);
           const now = this.read(id);
-          if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+          if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
             this.write(id, before);
           resolve();
         };
       });
       const after = this.read(id);
-      const ok = Number.isFinite(after) && Math.abs(after - target) < Math.max(0.035, target * 0.08);
+      const ok = Number.isFinite(after) && after > 0 && Math.abs(after - target) < tolerance;
       this.status = this.t("testResult", this.t(ok ? "confirmed" : "unconfirmed"));
     } catch (e) {
       this.status = this.t("error", String(e?.message || e));
     } finally {
       try {
         const now = this.read(id);
-        if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+        if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
           this.write(id, before);
       } catch (_) {
       }
       this.testRunning = false;
+      this.testBaseline = null;
       this.cancelTest = null;
     }
   }
