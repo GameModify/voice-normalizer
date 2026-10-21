@@ -1,4 +1,5 @@
 const { createUserState, calculateGain } = require("./audio/leveler");
+const { smoothVolume } = require("./audio/gain-envelope");
 const { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require("./audio/settings");
 const { normalizePreferences } = require("./preferences");
 const { languageFor, translate } = require("./i18n");
@@ -514,16 +515,10 @@ module.exports = class VoiceNormalizer {
               continue;
             }
             // An external slider change establishes a new baseline.
-            st.base = now;
-            st.ema = null;
-            st.voiceCount = 0;
-            st.lastWrite = null;
-            st.lastGain = 1;
-            st.stableGain = 1;
-            st.activityPolls = 0;
-            st.lastSpeechSampleAt = null;
-            st.talking = false;
-            st.writeUnconfirmed = 0;
+            st = createUserState(now);
+            st.lastLevel = level;
+            st.sampleAt = performance.now();
+            this.states.set(id, st);
             this.status = this.t("manualBase");
             continue;
           }
@@ -531,16 +526,18 @@ module.exports = class VoiceNormalizer {
           this.diagnostic.confirmed++;
         }
         const settings = this.settingsFor(id);
-        const gain = calculateGain(st, level, input.detected, performance.now(), settings);
+        const timestamp = performance.now();
+        const gain = calculateGain(st, level, input.detected, timestamp, settings);
         const ceiling = Math.min(
           this.ceilingFor(st.base),
           settings.mode === "attenuate" ? st.base : Infinity,
         );
         const floor = Math.min(0.02, st.base * settings.minGain);
         const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
-        const delta = desired - now;
-        const weight = delta < 0 ? settings.attack : settings.release;
-        const next = Math.max(floor, Math.min(ceiling, now + delta * weight));
+        const next = Math.max(
+          floor,
+          Math.min(ceiling, smoothVolume(st, now, desired, timestamp, settings)),
+        );
         st.lastGain = next / st.base;
         this.diagnostic.latest =
           "audio=" +

@@ -1,3 +1,5 @@
+const { mockClock } = require("./clock.cjs");
+const advanceClock = mockClock();
 // Smoke tests for VoiceNormalizer without connecting to Discord.
 const assert = require("node:assert/strict");
 const modPath = "../VoiceNormalizer.plugin.js";
@@ -12,6 +14,7 @@ const actions = {
 const conn = {
   context: "default",
   getStats() {
+    advanceClock();
     return Promise.resolve({
       rtp: { inbound: { a: [{ ssrc: 123, audioLevel: level, audioDetected: detected }] } },
     });

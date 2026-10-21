@@ -17,6 +17,8 @@ function createUserState(base) {
     activityPolls: 0,
     lastSpeechSampleAt: null,
     talking: false,
+    envelopeAt: null,
+    recoveryHoldMs: 0,
   };
 }
 
@@ -31,7 +33,9 @@ function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SET
       state.lastSpeechSampleAt === null
         ? 100
         : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
-    const alpha = 1 - Math.exp(-elapsed / 3000);
+    // Brief quiet syllables should not immediately erase a recent loud phrase.
+    const window = state.ema !== null && level < state.ema ? 6000 : 3000;
+    const alpha = 1 - Math.exp(-elapsed / window);
     state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
     state.lastSpeechSampleAt = timestamp;
     state.voiceCount++;
@@ -44,12 +48,12 @@ function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SET
     gain = Math.min(1, 0.18 / level);
   }
 
-  // A short loud spike is still ducked before speech has been confirmed.
-  if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
-
   gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
   if (settings.mode === "attenuate") gain = Math.min(1, gain);
   if (confirmed) state.stableGain = gain;
+  // Keep the peak guard separate from the learned speech target. Otherwise a
+  // single peak can become the target again at the start of the next phrase.
+  if (active && level > 0.18) gain = Math.max(settings.minGain, Math.min(gain, 0.18 / level));
   return gain;
 }
 

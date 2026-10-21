@@ -4,7 +4,10 @@ const Plugin = require("../VoiceNormalizer.plugin.js");
 const { createDocument, traverse } = require("./fake-dom.cjs");
 const { en, ru, languageFor, translate } = require("../src/i18n");
 
+const { mockClock } = require("./clock.cjs");
+
 function fixture(t) {
+  const advanceClock = mockClock(t);
   const saved = {};
   const volume = new Map([
     ["a", 100],
@@ -15,17 +18,20 @@ function fixture(t) {
   let level = 0.03;
   const conn = {
     getUserIdBySsrc: (ssrc) => roster[ssrc - 1],
-    getStats: () => ({
-      rtp: {
-        inbound: {
-          audio: roster.map((_, index) => ({
-            ssrc: index + 1,
-            audioLevel: level,
-            audioDetected: level > 0 ? 1 : 0,
-          })),
+    getStats: () => {
+      advanceClock();
+      return {
+        rtp: {
+          inbound: {
+            audio: roster.map((_, index) => ({
+              ssrc: index + 1,
+              audioLevel: level,
+              audioDetected: level > 0 ? 1 : 0,
+            })),
+          },
         },
-      },
-    }),
+      };
+    },
   };
   const stores = {
     LocaleStore: { locale: "ru" },

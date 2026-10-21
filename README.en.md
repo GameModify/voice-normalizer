@@ -19,6 +19,7 @@ Right-click a participant and enable **Level this user's voice**. Open the plugi
 - Selections and settings persist after restarting Discord.
 - Each person's Discord volume is the starting point for adjustments.
 - The plugin learns a fresh average voice level after reconnecting.
+- After a loud passage, volume recovers gradually during speech and holds steady in pauses.
 - Disabling processing restores the original volume, unless it has been changed manually.
 - Choose **Everyone in the voice channel** to include future joins, with per-user exclusions.
 - Choose **Only reduce loud voices** to keep volume at or below each person's baseline.
