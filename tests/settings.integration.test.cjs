@@ -3,8 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { getPreset } = require("../src/audio/settings");
+const { createUserState } = require("../src/audio/leveler");
 
-function makePlugin(level, inputSettings) {
+function makePlugin(t, level, inputSettings) {
   let volume = 100;
   const conn = {
     context: "default",
@@ -89,17 +90,21 @@ function makePlugin(level, inputSettings) {
   const Plugin = require("../VoiceNormalizer.plugin.js");
   const plugin = new Plugin();
   plugin.start();
+  t.after(() => plugin.stop());
   plugin.select("friend", true);
   plugin.updateSettings(inputSettings);
-  const state = plugin.states.get("friend");
+  // Seed an established session: selection now also works before joining a call.
+  plugin.connection = conn;
+  const state = createUserState(100);
+  plugin.states.set("friend", state);
   state.ema = level;
   state.voiceCount = 15;
   state.activityPolls = 2;
   return { plugin, getVolume: () => volume };
 }
 
-test("real controller applies selected attack and preserves original volume on stop", async () => {
-  const state = makePlugin(0.5, {
+test("real controller applies selected attack and preserves original volume on stop", async (t) => {
+  const state = makePlugin(t, 0.5, {
     ...getPreset("balanced"),
     attack: 0.2,
   });
@@ -110,8 +115,8 @@ test("real controller applies selected attack and preserves original volume on s
   delete global.BdApi;
 });
 
-test("real controller uses configured slow release", async () => {
-  const state = makePlugin(0.045, {
+test("real controller uses configured slow release", async (t) => {
+  const state = makePlugin(t, 0.045, {
     ...getPreset("balanced"),
     release: 0.05,
   });

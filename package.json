@@ -1,13 +1,13 @@
 {
   "name": "voice-normalizer",
-  "version": "1.2.0-alpha",
+  "version": "1.2.1-alpha",
   "private": true,
   "description": "Adaptive voice leveler for BetterDiscord",
   "scripts": {
     "build": "node scripts/build.cjs",
     "check": "node scripts/build.cjs --check && eslint src scripts && prettier --check src scripts tests eslint.config.js package.json",
     "format": "prettier --write src scripts tests eslint.config.js package.json",
-    "test": "npm run build && node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
