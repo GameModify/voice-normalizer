@@ -1,6 +1,6 @@
 {
   "name": "voice-normalizer",
-  "version": "1.1.0-alpha",
+  "version": "1.2.0-alpha",
   "private": true,
   "description": "Adaptive voice leveler for BetterDiscord",
   "scripts": {
