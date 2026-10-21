@@ -226,3 +226,19 @@ test("language follows Discord, can be overridden, and both dictionaries cover t
   assert.equal(languageFor("auto", "de"), "en");
   assert.equal(translate("en", "correction", 80), "Volume: 80% of baseline");
 });
+
+test("editing settings on a disabled plugin cannot start voice processing", async (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  p.stop();
+  p.updatePreferences({ scope: "all", mode: "attenuate" });
+  p.select("a", true);
+  assert.equal(p.enabled, false);
+  assert.equal(p.timer, null);
+  assert.equal(p.userStatus("a"), "off");
+  await p.tick(p.generation);
+  assert.equal(p.states.size, 0);
+  p.start();
+  await p.tick(p.generation);
+  assert(p.states.has("a"));
+});
