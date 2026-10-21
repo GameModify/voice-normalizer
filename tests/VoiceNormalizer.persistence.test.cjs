@@ -212,3 +212,93 @@ test("existing 1.2 profiles and custom settings survive loading and saving", (t)
   assert.equal(f.data.settings.maxGain, 2);
   assert.equal(f.data.settings.targetLevel, 0.12);
 });
+
+test("a stalled statistics request times out and does not block later connections", async (t) => {
+  const f = fixture(t);
+  const connection = f.connect();
+  connection.getStats = () => new Promise(() => {});
+  const p = f.create();
+  await p.tick(p.generation);
+  assert.equal(p.diagnostic.failures, 1);
+  assert.equal(p.pendingStats, null);
+  f.connect();
+  await p.tick(p.generation);
+  assert(f.volume.get("friend") < 100);
+});
+
+test("cancelled statistics cannot clear the slot owned by a restarted session", async (t) => {
+  const f = fixture(t);
+  const connection = f.connect();
+  let finishOld;
+  connection.getStats = () =>
+    new Promise((resolve) => {
+      finishOld = resolve;
+    });
+  const p = f.create();
+  const old = p.tick(p.generation);
+  p.stop();
+  p.start();
+  const nextConnection = f.connect();
+  let finishNext;
+  const data = nextConnection.getStats();
+  nextConnection.getStats = () =>
+    new Promise((resolve) => {
+      finishNext = resolve;
+    });
+  const next = p.tick(p.generation);
+  const request = p.pendingStats;
+  await old;
+  finishOld(data);
+  assert.equal(p.pendingStats, request);
+  assert.equal(f.writes.length, 0);
+  finishNext(data);
+  await next;
+  assert(f.volume.get("friend") < 100);
+});
+
+test("observed volumes above 200 can be attenuated and restored without raising the general cap", async (t) => {
+  const f = fixture(t);
+  f.volume.set("friend", 500);
+  f.connect();
+  const p = f.create();
+  assert.equal(p.write("friend", 500), false);
+  await p.tick(p.generation);
+  assert(f.volume.get("friend") < 500);
+  assert.equal(p.write("friend", 501), false);
+  p.stop();
+  assert.equal(f.volume.get("friend"), 500);
+});
+
+test("very small volumes still normalize and a manual change establishes a new baseline", async (t) => {
+  const f = fixture(t);
+  f.volume.set("friend", 0.01);
+  f.connect();
+  const p = f.create();
+  await p.tick(p.generation);
+  assert(f.volume.get("friend") < 0.01);
+  p.states.get("friend").lastWriteTime = -1000;
+  f.volume.set("friend", 0.003);
+  await p.tick(p.generation);
+  assert.equal(p.states.get("friend").base, 0.003);
+  p.stop();
+  assert.equal(f.volume.get("friend"), 0.003);
+});
+
+test("manual volume diagnostics restore high baselines and respect a new zero setting", async (t) => {
+  const f = fixture(t, []);
+  f.volume.set("friend", 500);
+  const p = f.create();
+  const high = p.halfVolumeTest("friend");
+  assert.equal(f.volume.get("friend"), 250);
+  p.stop();
+  await high;
+  assert.equal(f.volume.get("friend"), 500);
+  p.start();
+  f.volume.set("friend", 0.01);
+  const quiet = p.halfVolumeTest("friend");
+  assert.equal(f.volume.get("friend"), 0.005);
+  f.volume.set("friend", 0);
+  p.stop();
+  await quiet;
+  assert.equal(f.volume.get("friend"), 0);
+});

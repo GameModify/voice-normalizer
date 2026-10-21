@@ -119,6 +119,7 @@ function createSettingsPanel(plugin, doc) {
       mode.update(plugin.preferences.mode);
       controls.refresh(plugin.settings);
       const roster = plugin.participants();
+      const names = new Map(roster.map((person) => [person.id, person.name]));
       const currentIds = new Set(roster.map((person) => person.id));
       availableEmpty.style.display = roster.length ? "none" : "";
       for (const [id, row] of availableRows) {
@@ -202,13 +203,9 @@ function createSettingsPanel(plugin, doc) {
           cards.set(id, card);
         }
         const user = BdApi.Webpack.getStore("UserStore")?.getUser?.(id);
-        card.name.textContent =
-          roster.find((person) => person.id === id)?.name ||
-          user?.globalName ||
-          user?.username ||
-          id;
+        card.name.textContent = names.get(id) || user?.globalName || user?.username || id;
         const selected = plugin.isSelected(id);
-        card.status.textContent = t(plugin.userStatus(id));
+        card.status.textContent = t(plugin.userStatus(id, roster));
         card.detail.textContent =
           selected && plugin.states.has(id)
             ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0))

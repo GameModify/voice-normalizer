@@ -1,5 +1,7 @@
 # VoiceNormalizer
 
+**Русский** · [English](./README.en.md)
+
 Плагин для **BetterDiscord**, который приглушает громкую речь и усиливает тихую у выбранных участников голосового чата.
 
 Автор: **GameModify** · [GameModify](https://github.com/GameModify)
