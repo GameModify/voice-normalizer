@@ -1,4 +1,6 @@
 const { createUserState, calculateGain } = require("./audio/leveler");
+const { DEFAULT_SETTINGS, normalizeSettings } = require("./audio/settings");
+const { createSettingsControls } = require("./ui/settings-controls");
 
 module.exports = class VoiceNormalizer {
   constructor() {
@@ -27,10 +29,12 @@ module.exports = class VoiceNormalizer {
     // The Store may expose percent-like values (e.g. 100) or amplitude-like values.
     // Never enforce a fixed 2.0 ceiling on values returned by the Store.
     this.maxInternalVolume = 200;
+    this.settings = { ...DEFAULT_SETTINGS };
     this.mappingDebug = "ещё нет данных";
     this.lastWriteError = "нет";
   }
   start() {
+    this.loadSettings();
     this.resolveWriter();
     this.installMenus();
     BdApi.UI.showToast("VoiceNormalizer: настройки и ПКМ по пользователю", { type: "info" });
@@ -45,6 +49,23 @@ module.exports = class VoiceNormalizer {
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
+  }
+  loadSettings() {
+    try {
+      this.settings = normalizeSettings(BdApi.Data?.load?.("VoiceNormalizer", "settings"));
+    } catch (_) {
+      this.settings = { ...DEFAULT_SETTINGS };
+    }
+    return this.settings;
+  }
+  updateSettings(next) {
+    this.settings = normalizeSettings(next);
+    try {
+      BdApi.Data?.save?.("VoiceNormalizer", "settings", this.settings);
+    } catch (error) {
+      this.status = "Не удалось сохранить настройки: " + String(error?.message || error);
+    }
+    return { ...this.settings };
   }
   store() {
     return BdApi.Webpack.getStore("MediaEngineStore");
@@ -335,11 +356,11 @@ module.exports = class VoiceNormalizer {
           st.writeUnconfirmed = 0;
           this.diagnostic.confirmed++;
         }
-        const gain = calculateGain(st, level, input.detected, performance.now());
+        const gain = calculateGain(st, level, input.detected, performance.now(), this.settings);
         const ceiling = this.ceilingFor(st.base);
         const desired = Math.max(0.02, Math.min(ceiling, st.base * gain));
         const delta = desired - now;
-        const weight = delta < 0 ? 0.65 : 0.1;
+        const weight = delta < 0 ? this.settings.attack : this.settings.release;
         const next = Math.max(0.02, Math.min(ceiling, now + delta * weight));
         st.lastGain = next / st.base;
         this.diagnostic.latest =
@@ -580,7 +601,7 @@ module.exports = class VoiceNormalizer {
     root.style.cssText =
       "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
     const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer · 1.0.8 Alpha";
+    title.textContent = "VoiceNormalizer · 1.2.0 Alpha";
     title.style.margin = "0";
     const help = document.createElement("p");
     help.textContent =
@@ -708,7 +729,10 @@ module.exports = class VoiceNormalizer {
       render();
     });
     actions.append(stop, reload);
-    root.append(title, help, livePanel, people, actions, debug);
+    const controls = createSettingsControls(document, this.settings, (next) =>
+      this.updateSettings(next),
+    );
+    root.append(title, help, controls, livePanel, people, actions, debug);
     refresh();
     render();
     const timer = setInterval(() => {
