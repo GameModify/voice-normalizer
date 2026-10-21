@@ -50,3 +50,7 @@
 Если что-то работает неправильно, [создайте issue](https://github.com/GameModify/voice-normalizer/issues/new): укажите версию плагина, выбранный режим, шаги и ожидаемый результат.
 
 [Подробные настройки](./docs/SETTINGS.md) · [Планы](./docs/ROADMAP.md) · [Разработка](./CONTRIBUTING.md)
+
+## Лицензия
+
+[MIT](./LICENSE) © 2026 GameModify.
