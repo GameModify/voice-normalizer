@@ -7,3 +7,7 @@ node_modules/
 Thumbs.db
 coverage/
 *.tmp
+snapshots/
+*.backup-*.plugin.js
+VoiceAudioProbe.plugin.js
+github-review/

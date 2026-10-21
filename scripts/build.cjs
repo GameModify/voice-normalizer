@@ -3,11 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
+const { version } = require("../package.json");
 const metadata = `/**
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.2.0-alpha
+ * @version ${version}
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */`;
 const output = path.join(root, "VoiceNormalizer.plugin.js");

@@ -65,6 +65,7 @@ test("BetterDiscord settings persist and survive plugin restart", () => {
     Data: {
       load(name, key) {
         assert.equal(name, "VoiceNormalizer");
+        if (key === "targets") return [];
         assert.equal(key, "settings");
         return saved;
       },
