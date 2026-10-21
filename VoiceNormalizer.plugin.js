@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.2.0-alpha
+ * @version 1.2.1-alpha
  * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -289,12 +289,15 @@ module.exports = class VoiceNormalizer {
   }
   start() {
     this.loadSettings();
+    this.loadTargets();
     this.resolveWriter();
     this.installMenus();
+    this.resume();
     BdApi.UI.showToast("VoiceNormalizer: \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u041F\u041A\u041C \u043F\u043E \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044E", { type: "info" });
   }
   stop() {
-    this.turnOff();
+    this.cancelTest?.();
+    this.suspend();
     for (const unpatch of this.unpatches) {
       try {
         unpatch();
@@ -304,6 +307,54 @@ module.exports = class VoiceNormalizer {
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
+    this.mediaProvider = null;
+  }
+  loadTargets() {
+    try {
+      const saved = BdApi.Data?.load?.("VoiceNormalizer", "targets");
+      this.targets = new Set(
+        (Array.isArray(saved) ? saved : []).filter(
+          (id) => typeof id === "string" && id.length > 0 && id.length <= 32
+        )
+      );
+    } catch (error) {
+      this.toast(
+        "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + String(error?.message || error),
+        "error"
+      );
+    }
+  }
+  saveTargets() {
+    try {
+      BdApi.Data.save("VoiceNormalizer", "targets", [...this.targets]);
+    } catch (error) {
+      this.toast(
+        "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0432\u044B\u0431\u043E\u0440 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + String(error?.message || error),
+        "error"
+      );
+    }
+  }
+  resetConnection(conn = null) {
+    for (const id of [...this.states.keys()]) this.restore(id);
+    this.connection = conn;
+  }
+  suspend() {
+    this.enabled = false;
+    this.generation++;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.resetConnection();
+    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+  }
+  resume() {
+    if (this.enabled || !this.targets.size) return;
+    this.enabled = true;
+    const generation = ++this.generation;
+    this.timer = setInterval(() => {
+      this.tick(generation).catch(() => {
+      });
+    }, 100);
+    this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B \u0438 \u0440\u0435\u0447\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439";
   }
   loadSettings() {
     try {
@@ -351,7 +402,10 @@ module.exports = class VoiceNormalizer {
   }
   connect() {
     try {
-      const provider = BdApi.Webpack.getModule((m) => typeof m?.getMediaEngine === "function");
+      if (!this.mediaProvider && performance.now() < (this.providerRetryAt || 0)) return null;
+      const provider = this.mediaProvider || BdApi.Webpack.getModule((m) => typeof m?.getMediaEngine === "function");
+      this.mediaProvider = provider;
+      if (!provider) this.providerRetryAt = performance.now() + 5e3;
       let conn = null;
       provider?.getMediaEngine?.()?.eachConnection?.((c) => {
         if (!conn && typeof c?.getStats === "function" && typeof c?.getUserIdBySsrc === "function" && c.context !== "stream")
@@ -418,61 +472,39 @@ module.exports = class VoiceNormalizer {
     const st = this.states.get(id);
     if (!st) return;
     const now = this.read(id);
-    if (st.lastWrite !== null && Number.isFinite(now) && Math.abs(now - st.lastWrite) <= Math.max(0.03, st.lastWrite * 0.035)) {
+    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= Math.max(0.03, st.lastWrite * 0.035)) {
       this.write(id, st.base);
     }
     this.states.delete(id);
   }
   turnOff() {
-    this.enabled = false;
-    this.generation++;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    for (const id of [...this.states.keys()]) this.restore(id);
+    this.suspend();
     this.targets.clear();
-    this.connection = null;
-    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+    this.saveTargets();
   }
   select(id, on) {
     id = String(id);
+    if (!id || id === BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id) return;
     if (!on) {
       this.targets.delete(id);
       this.restore(id);
-      if (!this.targets.size) this.turnOff();
+      if (!this.targets.size) this.suspend();
       else this.status = "\u0412\u044B\u0431\u0440\u0430\u043D\u043E: " + this.targets.size;
+      this.saveTargets();
       return;
     }
     if (this.testRunning) {
       this.toast("\u0417\u0430\u0432\u0435\u0440\u0448\u0438 \u0440\u0443\u0447\u043D\u043E\u0439 \u0442\u0435\u0441\u0442", "warning");
       return;
     }
-    if (!this.writer && !this.resolveWriter()) {
-      this.toast("\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u043C\u0435\u0442\u043E\u0434 \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord", "error");
-      return;
-    }
-    const conn = this.connect();
-    const current = this.read(id);
-    if (!conn || !Number.isFinite(current) || current <= 0) {
-      this.toast("\u041D\u0435\u0442 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u044F \u0438\u043B\u0438 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F", "warning");
-      return;
-    }
+    if (this.targets.has(id)) return;
     this.targets.add(id);
-    this.states.set(id, createUserState(current));
-    if (!this.enabled) {
-      this.enabled = true;
-      this.connection = conn;
-      const generation = ++this.generation;
-      this.timer = setInterval(() => {
-        this.tick(generation).catch(() => {
-        });
-      }, 100);
-    }
-    this.status = "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \xB7 \u0436\u0434\u0451\u043C \u0440\u0435\u0447\u044C \xB7 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + this.targets.size;
+    this.resume();
+    this.saveTargets();
   }
   // Discord's getUserIdBySsrc is not guaranteed to return a user ID.
   // Prefer confirmed user IDs from the local voice-state participant list.
-  resolveId(conn, ssrc) {
-    const allowed = new Set(this.participants().map((p) => p.id));
+  resolveId(conn, ssrc, allowed = new Set(this.participants().map((p) => p.id))) {
     try {
       const value = conn.getUserIdBySsrc?.(ssrc);
       const id = String(value?.userId ?? value?.id ?? value ?? "");
@@ -510,15 +542,16 @@ module.exports = class VoiceNormalizer {
     }
     return matches.size === 1 ? [...matches][0] : "";
   }
-  collect(conn, data) {
+  collect(conn, data, allowed = new Set(this.participants().map((p) => p.id))) {
     const map = /* @__PURE__ */ new Map();
     let packets = 0, mapped = 0;
     for (const group of Object.values(data?.rtp?.inbound || {})) {
       const samples = Array.isArray(group) ? group : Object.values(group || {});
       for (const sample of samples) {
-        if (!Number.isFinite(sample?.ssrc) || !Number.isFinite(sample?.audioLevel)) continue;
+        if (!Number.isFinite(sample?.ssrc) || !Number.isFinite(sample?.audioLevel) || sample.audioLevel < 0 || sample.audioLevel > 1)
+          continue;
         packets++;
-        const id = this.resolveId(conn, sample.ssrc);
+        const id = this.resolveId(conn, sample.ssrc, allowed);
         if (!id) continue;
         mapped++;
         const existing = map.get(id);
@@ -533,32 +566,54 @@ module.exports = class VoiceNormalizer {
     this.busy = true;
     try {
       const conn = this.connect();
-      if (!conn || conn !== this.connection) {
-        this.turnOff();
-        this.status = "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C \u2014 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E";
+      if (conn !== this.connection) this.resetConnection(conn);
+      if (!conn) {
+        this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B \xB7 \u0432\u044B\u0431\u043E\u0440 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D";
+        return;
+      }
+      if (!this.writer) {
+        if (!this.writerRetryAt || performance.now() >= this.writerRetryAt) {
+          this.resolveWriter();
+          this.writerRetryAt = performance.now() + 5e3;
+        }
+        this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u043C\u043E\u0434\u0443\u043B\u044C \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord";
         return;
       }
       const data = await Promise.resolve(conn.getStats());
       if (!this.enabled || generation !== this.generation) return;
-      const { map, packets, mapped } = this.collect(conn, data);
+      if (this.connect() !== conn) {
+        this.resetConnection();
+        return;
+      }
+      const allowed = new Set(this.participants().map((person) => person.id));
+      for (const id of [...this.states.keys()]) {
+        if (!allowed.has(id)) this.restore(id);
+      }
+      const { map, packets, mapped } = this.collect(conn, data, allowed);
       this.diagnostic.polls++;
       this.diagnostic.packets = packets;
       this.diagnostic.mapped = mapped;
+      this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0440\u0435\u0447\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439";
       for (const id of [...this.targets]) {
-        const st = this.states.get(id);
-        if (!st) continue;
+        if (!allowed.has(id)) continue;
         const input = map.get(id);
         if (!input) {
           this.status = "SSRC \u043D\u0435 \u0441\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D \u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u043C \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u043E\u043C";
           continue;
         }
         const level = input.level;
-        st.lastLevel = level;
         const now = this.read(id);
         if (!Number.isFinite(now) || now <= 0) {
+          this.states.delete(id);
           this.status = "\u041D\u0435\u0442 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438 \u0432 store";
           continue;
         }
+        let st = this.states.get(id);
+        if (!st || st.lastWrite === null && st.base !== now) {
+          st = createUserState(now);
+          this.states.set(id, st);
+        }
+        st.lastLevel = level;
         if (st.lastWrite !== null) {
           const diff = Math.abs(now - st.lastWrite);
           if (diff > Math.max(0.04, st.lastWrite * 0.04)) {
@@ -625,7 +680,16 @@ module.exports = class VoiceNormalizer {
     try {
       if (!this.write(id, target)) throw new Error("\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435");
       this.status = "\u0422\u0435\u0441\u0442 \xD70.5 \u0437\u0430\u043F\u0443\u0449\u0435\u043D \u2014 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u043F\u043E\u043D\u0438\u0436\u0435\u043D\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438";
-      await new Promise((r) => setTimeout(r, 3e3));
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 3e3);
+        this.cancelTest = () => {
+          clearTimeout(timer);
+          const now = this.read(id);
+          if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+            this.write(id, before);
+          resolve();
+        };
+      });
       const after = this.read(id);
       const ok = Number.isFinite(after) && Math.abs(after - target) < Math.max(0.035, target * 0.08);
       this.status = "\u0422\u0435\u0441\u0442 \xD70.5: \u0434\u043E=" + before.toFixed(4) + ", \u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F=" + target.toFixed(4) + ", Discord=" + String(Number.isFinite(after) ? after.toFixed(4) : after) + ", \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442=" + (ok ? "\u041E\u041A" : "\u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D");
@@ -639,6 +703,7 @@ module.exports = class VoiceNormalizer {
       } catch (_) {
       }
       this.testRunning = false;
+      this.cancelTest = null;
     }
   }
   insertNearVolume(tree, item) {
@@ -794,10 +859,10 @@ module.exports = class VoiceNormalizer {
     const root = document.createElement("div");
     root.style.cssText = "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
     const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer \xB7 1.2.0 Alpha";
+    title.textContent = "VoiceNormalizer \xB7 1.2.1 Alpha";
     title.style.margin = "0";
     const help = document.createElement("p");
-    help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0421\u0440\u0435\u0434\u043D\u044F\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
+    help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F \u043F\u043E user ID \u043F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 Discord \u0438 \u0441\u043C\u0435\u043D\u044B \u043A\u0430\u043D\u0430\u043B\u0430. \u0412 \u043D\u043E\u0432\u043E\u043C \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0438 \u0441\u0440\u0435\u0434\u043D\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C \u0440\u0435\u0447\u0438 \u0432\u044B\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F \u0437\u0430\u043D\u043E\u0432\u043E. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
     help.style.cssText = "margin:0;color:var(--text-muted);line-height:1.4";
     const livePanel = document.createElement("div");
     livePanel.style.cssText = "display:flex;flex-direction:column;gap:8px";
@@ -855,7 +920,7 @@ module.exports = class VoiceNormalizer {
         const card = document.createElement("div");
         card.style.cssText = "background:var(--background-secondary);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px";
         const name = document.createElement("div");
-        name.textContent = roster.get(id) || "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0439 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C";
+        name.textContent = roster.get(id) || BdApi.Webpack.getStore("UserStore")?.getUser?.(id)?.username || id;
         name.style.cssText = "font-weight:700;font-size:13px";
         const detail = document.createElement("div");
         detail.style.cssText = "font-size:12px;color:var(--text-muted)";
@@ -868,7 +933,18 @@ module.exports = class VoiceNormalizer {
         const baseMark = document.createElement("div");
         baseMark.style.cssText = "position:absolute;left:50%;top:0;height:100%;width:2px;background:var(--text-normal);opacity:.55";
         track.append(fill, baseMark);
-        card.append(name, detail, track);
+        const remove = makeButton(
+          "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F",
+          () => {
+            this.select(id, false);
+            refresh();
+            render();
+          },
+          true
+        );
+        if (!this.states.has(id))
+          detail.textContent = "\u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D \xB7 \u043E\u0436\u0438\u0434\u0430\u0435\u043C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430 \u0438 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435";
+        card.append(name, detail, track, remove);
         livePanel.append(card);
       }
       debug.textContent = [
