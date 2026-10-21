@@ -66,6 +66,7 @@ test("BetterDiscord settings persist and survive plugin restart", () => {
       load(name, key) {
         assert.equal(name, "VoiceNormalizer");
         if (key === "targets") return [];
+        if (key === "preferences") return undefined;
         assert.equal(key, "settings");
         return saved;
       },
@@ -106,37 +107,32 @@ test("BetterDiscord settings persist and survive plugin restart", () => {
   delete global.BdApi;
 });
 
-test("control panel changes presets and creates a custom profile on slider input", () => {
-  const makeNode = (tag) => ({
-    tag,
-    style: {},
-    children: [],
-    listeners: {},
-    value: "",
-    append(...items) {
-      this.children.push(...items);
-    },
-    addEventListener(type, handler) {
-      this.listeners[type] = handler;
-    },
-  });
-  const root = { createElement: makeNode };
+test("control panel changes profiles without native dropdowns and keeps advanced sliders", () => {
+  const { createDocument, traverse } = require("./fake-dom.cjs");
+  const doc = createDocument();
   let settings = getPreset("balanced");
-  const panel = createSettingsControls(root, settings, (input) => {
+  const panel = createSettingsControls(doc, settings, (input) => {
     settings = normalizeSettings(input);
     return settings;
   });
-  const traverse = (node) => [node, ...(node.children || []).flatMap(traverse)];
   const elements = traverse(panel);
-  const selector = elements.find((node) => node.tag === "select");
+  const soft = elements.find((node) => node.dataset.value === "soft");
   const sliders = elements.filter((node) => node.tag === "input" && node.type === "range");
   assert.equal(sliders.length, 5);
-  selector.value = "soft";
-  selector.listeners.change();
+  assert.equal(
+    elements.some((node) => node.tag === "select"),
+    false,
+  );
+  assert.equal(panel.advanced.open, false);
+  soft.fire("click");
   assert.equal(settings.maxGain, 1.3);
   const targetSlider = sliders[0];
   targetSlider.value = "0.15";
-  targetSlider.listeners.input();
+  targetSlider.fire("input");
   assert.equal(settings.profile, "custom");
   assert.equal(settings.targetLevel, 0.15);
+  assert.equal(
+    traverse(panel).find((node) => node.dataset.value === "soft"),
+    soft,
+  );
 });

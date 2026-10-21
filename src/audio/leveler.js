@@ -48,6 +48,7 @@ function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SET
   if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
 
   gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
+  if (settings.mode === "attenuate") gain = Math.min(1, gain);
   if (confirmed) state.stableGain = gain;
   return gain;
 }

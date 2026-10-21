@@ -2,8 +2,8 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.2.1-alpha
- * @description Selected-user adaptive voice leveling (experimental). Average speech tracking and conservative peak ducking.
+ * @version 1.3.0-beta.3
+ * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -83,10 +83,10 @@ var require_settings = __commonJS({
       }
       return result;
     }
-    function getPreset(profile) {
+    function getPreset2(profile) {
       return normalizeSettings2(PRESETS[profile] || PRESETS.balanced);
     }
-    module2.exports = { DEFAULT_SETTINGS: DEFAULT_SETTINGS2, PRESETS, BOUNDS, normalizeSettings: normalizeSettings2, getPreset };
+    module2.exports = { DEFAULT_SETTINGS: DEFAULT_SETTINGS2, PRESETS, BOUNDS, normalizeSettings: normalizeSettings2, getPreset: getPreset2 };
   }
 });
 
@@ -129,6 +129,7 @@ var require_leveler = __commonJS({
       }
       if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
       gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
+      if (settings.mode === "attenuate") gain = Math.min(1, gain);
       if (confirmed) state.stableGain = gain;
       return gain;
     }
@@ -136,142 +137,673 @@ var require_leveler = __commonJS({
   }
 });
 
+// src/preferences.js
+var require_preferences = __commonJS({
+  "src/preferences.js"(exports2, module2) {
+    "use strict";
+    var PROFILES = ["soft", "balanced", "aggressive"];
+    var validId = (id) => typeof id === "string" && id.length > 0 && id.length <= 32;
+    function normalizePreferences2(input) {
+      const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+      const profiles = {};
+      if (value.profiles && typeof value.profiles === "object") {
+        for (const [id, profile] of Object.entries(value.profiles)) {
+          if (validId(id) && PROFILES.includes(profile) && !["__proto__", "constructor", "prototype"].includes(id))
+            profiles[id] = profile;
+        }
+      }
+      return {
+        scope: value.scope === "all" ? "all" : "selected",
+        mode: value.mode === "attenuate" ? "attenuate" : "normalize",
+        language: ["en", "ru"].includes(value.language) ? value.language : "auto",
+        excluded: [...new Set((Array.isArray(value.excluded) ? value.excluded : []).filter(validId))],
+        profiles
+      };
+    }
+    module2.exports = { normalizePreferences: normalizePreferences2, PROFILES };
+  }
+});
+
+// src/i18n.js
+var require_i18n = __commonJS({
+  "src/i18n.js"(exports2, module2) {
+    "use strict";
+    var en = {
+      ready: "VoiceNormalizer: right-click a user to control voice leveling",
+      off: "Off",
+      waitingChannel: "Waiting for a voice channel",
+      waitingUser: "Waiting for this user",
+      waitingSpeech: "Waiting for speech",
+      learning: "Learning average voice level",
+      active: "Voice leveling active",
+      muted: "Muted in Discord",
+      unavailable: "Waiting for voice data",
+      writerWaiting: "Waiting for Discord volume controls",
+      noData: "No data yet",
+      none: "None",
+      unknown: "Not checked",
+      participant: "Participant",
+      error: "Error: {0}",
+      saveError: "Could not save preferences: {0}",
+      loadError: "Could not load preferences: {0}",
+      toggle: "Level this user's voice",
+      profile: "Profile",
+      globalProfile: "Default profile",
+      inherit: "Use default",
+      soft: "Soft",
+      balanced: "Balanced",
+      aggressive: "Aggressive",
+      custom: "Custom",
+      reset: "Reset learning",
+      resetDone: "Voice learning reset",
+      settingsTitle: "VoiceNormalizer \xB7 {0}",
+      help: "Uses each person's Discord volume as the baseline. Choices are saved; voice levels are learned again after reconnecting.",
+      scope: "Who to process",
+      selected: "Selected people",
+      all: "Everyone in the voice channel",
+      scopeNote: "Everyone includes people who join later. You can still exclude individual users.",
+      mode: "Voice leveling",
+      normalize: "Boost quiet \xB7 reduce loud",
+      attenuate: "Only reduce loud voices",
+      modeNote: "Only reduce never raises volume above the person's Discord baseline.",
+      language: "Language",
+      auto: "Discord language",
+      addPeople: "Channel participants",
+      managedPeople: "Selected people",
+      excludedPeople: "Excluded from everyone mode",
+      noPeople: "Join a voice channel to see participants.",
+      noSelected: "No people selected yet.",
+      noExcluded: "No exclusions.",
+      allSelected: "Everyone in this channel is already enabled.",
+      enable: "Enable",
+      disable: "Disable",
+      enabled: "Enabled",
+      excluded: "Excluded",
+      stopAll: "Disable for everyone",
+      advanced: "Advanced",
+      advancedNote: "RTP is relative audio statistics, not Discord slider percentage or LUFS. This is not an instant audio limiter.",
+      targetLevel: "Target RTP level",
+      maxGain: "Maximum boost",
+      minGain: "Minimum gain",
+      attack: "Volume reduction speed",
+      release: "Volume increase speed",
+      perPoll: "per poll",
+      baseline: "of baseline",
+      correction: "Volume: {0}% of baseline",
+      diagnostics: "Diagnostics",
+      test: "Test \xD70.5",
+      testBusy: "Disable voice leveling before running the volume test",
+      noWriter: "Discord volume controls are unavailable",
+      noVolume: "Could not read this user's volume",
+      testStarted: "Half-volume test: 3 seconds",
+      testResult: "Half-volume test: {0}",
+      confirmed: "confirmed",
+      unconfirmed: "not confirmed",
+      volumeError: "Volume write failed: {0}",
+      manualBase: "Manual volume changed \xB7 using new baseline",
+      meter: "VoiceNormalizer voice status",
+      profileNote: "Quick presets. Detailed controls are under Advanced.",
+      profileFor: "Profile for this person",
+      settingsSaved: "Settings saved"
+    };
+    var ru = {
+      ready: "VoiceNormalizer: \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 \u041F\u041A\u041C \u043F\u043E \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0443",
+      off: "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E",
+      waitingChannel: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B",
+      waitingUser: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430",
+      waitingSpeech: "\u0416\u0434\u0451\u043C \u0440\u0435\u0447\u044C",
+      learning: "\u041E\u043F\u0440\u0435\u0434\u0435\u043B\u044F\u0435\u043C \u0441\u0440\u0435\u0434\u043D\u044E\u044E \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C",
+      active: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u043D\u0438\u0435 \u0430\u043A\u0442\u0438\u0432\u043D\u043E",
+      muted: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0432 Discord \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u0430",
+      unavailable: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435",
+      writerWaiting: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord",
+      noData: "\u0415\u0449\u0451 \u043D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445",
+      none: "\u041D\u0435\u0442",
+      unknown: "\u041D\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D",
+      participant: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A",
+      error: "\u041E\u0448\u0438\u0431\u043A\u0430: {0}",
+      saveError: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: {0}",
+      loadError: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: {0}",
+      toggle: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430",
+      profile: "\u041F\u0440\u043E\u0444\u0438\u043B\u044C",
+      globalProfile: "\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E",
+      inherit: "\u041A\u0430\u043A \u0443 \u0432\u0441\u0435\u0445",
+      soft: "\u041C\u044F\u0433\u043A\u0438\u0439",
+      balanced: "\u0411\u0430\u043B\u0430\u043D\u0441",
+      aggressive: "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u044B\u0439",
+      custom: "\u041C\u043E\u0439",
+      reset: "\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u043E\u0431\u0443\u0447\u0435\u043D\u0438\u0435",
+      resetDone: "\u041E\u0431\u0443\u0447\u0435\u043D\u0438\u0435 \u0433\u043E\u043B\u043E\u0441\u0430 \u0441\u0431\u0440\u043E\u0448\u0435\u043D\u043E",
+      settingsTitle: "VoiceNormalizer \xB7 {0}",
+      help: "\u0417\u0430 \u043E\u0441\u043D\u043E\u0432\u0443 \u0431\u0435\u0440\u0451\u0442\u0441\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u0432 Discord. \u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F; \u043F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0443\u0440\u043E\u0432\u0435\u043D\u044C \u0440\u0435\u0447\u0438 \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u044F\u0435\u0442\u0441\u044F \u0437\u0430\u043D\u043E\u0432\u043E.",
+      scope: "\u041A\u043E\u0433\u043E \u043E\u0431\u0440\u0430\u0431\u0430\u0442\u044B\u0432\u0430\u0442\u044C",
+      selected: "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043B\u044E\u0434\u0435\u0439",
+      all: "\u0412\u0441\u0435\u0445 \u0432 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u043C \u043A\u0430\u043D\u0430\u043B\u0435",
+      scopeNote: "\u0420\u0435\u0436\u0438\u043C \u0434\u043B\u044F \u0432\u0441\u0435\u0445 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0438 \u043D\u0430 \u043D\u043E\u0432\u044B\u0445 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432. \u041E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u0445 \u043B\u044E\u0434\u0435\u0439 \u043C\u043E\u0436\u043D\u043E \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u044C.",
+      mode: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u043D\u0438\u0435 \u0433\u043E\u043B\u043E\u0441\u0430",
+      normalize: "\u0423\u0441\u0438\u043B\u0438\u0432\u0430\u0442\u044C \u0442\u0438\u0445\u043E\u0435 \xB7 \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0435",
+      attenuate: "\u0422\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0435",
+      modeNote: "\u0412 \u0440\u0435\u0436\u0438\u043C\u0435 \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043D\u0435 \u043F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0442\u0441\u044F \u0432\u044B\u0448\u0435 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u0432 Discord.",
+      language: "\u042F\u0437\u044B\u043A",
+      auto: "\u041A\u0430\u043A \u0432 Discord",
+      addPeople: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043A\u0430\u043D\u0430\u043B\u0430",
+      managedPeople: "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438",
+      excludedPeople: "\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0437 \u0440\u0435\u0436\u0438\u043C\u0430 \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
+      noPeople: "\u0412\u043E\u0439\u0434\u0438\u0442\u0435 \u0432 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B, \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432.",
+      noSelected: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043F\u043E\u043A\u0430 \u043D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u044B.",
+      noExcluded: "\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0439 \u043D\u0435\u0442.",
+      allSelected: "\u0412\u0441\u0435 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u044D\u0442\u043E\u0433\u043E \u043A\u0430\u043D\u0430\u043B\u0430 \u0443\u0436\u0435 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u044B.",
+      enable: "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C",
+      disable: "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C",
+      enabled: "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E",
+      excluded: "\u0418\u0441\u043A\u043B\u044E\u0447\u0451\u043D",
+      stopAll: "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
+      advanced: "\u0414\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u043E",
+      advancedNote: "RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0430\u0443\u0434\u0438\u043E, \u0430 \u043D\u0435 \u043F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord \u0438\u043B\u0438 LUFS. \u042D\u0442\u043E \u043D\u0435 \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u043E\u043B\u0438\u043C\u0438\u0442\u0435\u0440.",
+      targetLevel: "\u0426\u0435\u043B\u0435\u0432\u043E\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C RTP",
+      maxGain: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435",
+      minGain: "\u041C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043A\u043E\u044D\u0444\u0444\u0438\u0446\u0438\u0435\u043D\u0442 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
+      attack: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F",
+      release: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u043E\u0432\u044B\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
+      perPoll: "\u0437\u0430 \u043E\u043F\u0440\u043E\u0441",
+      baseline: "\u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
+      correction: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C: {0}% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
+      diagnostics: "\u0414\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430",
+      test: "\u0422\u0435\u0441\u0442 \xD70.5",
+      testBusy: "\u041F\u0435\u0440\u0435\u0434 \u0440\u0443\u0447\u043D\u044B\u043C \u0442\u0435\u0441\u0442\u043E\u043C \u043E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u043D\u0438\u0435",
+      noWriter: "\u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E",
+      noVolume: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430",
+      testStarted: "\u0422\u0435\u0441\u0442 \u043F\u043E\u043B\u043E\u0432\u0438\u043D\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B",
+      testResult: "\u0422\u0435\u0441\u0442 \u043F\u043E\u043B\u043E\u0432\u0438\u043D\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: {0}",
+      confirmed: "\u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D",
+      unconfirmed: "\u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D",
+      volumeError: "\u041E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: {0}",
+      manualBase: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0430 \u0432\u0440\u0443\u0447\u043D\u0443\u044E \xB7 \u043F\u0440\u0438\u043D\u044F\u0442\u0430 \u043D\u043E\u0432\u0430\u044F \u0431\u0430\u0437\u0430",
+      meter: "VoiceNormalizer: \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0433\u043E\u043B\u043E\u0441\u0430",
+      profileNote: "\u0411\u044B\u0441\u0442\u0440\u044B\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u0438. \u0422\u043E\u0447\u043D\u044B\u0435 \u043F\u0430\u0440\u0430\u043C\u0435\u0442\u0440\u044B \u043D\u0430\u0445\u043E\u0434\u044F\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0414\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u043E\xBB.",
+      profileFor: "\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u044D\u0442\u043E\u0433\u043E \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430",
+      settingsSaved: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B"
+    };
+    function languageFor2(preference, discordLocale) {
+      if (["ru", "en"].includes(preference)) return preference;
+      return String(discordLocale || "en").toLowerCase().startsWith("ru") ? "ru" : "en";
+    }
+    function translate2(language, key, ...values) {
+      const template = (language === "ru" ? ru : en)[key] ?? en[key] ?? key;
+      return template.replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ""));
+    }
+    module2.exports = { en, ru, languageFor: languageFor2, translate: translate2 };
+  }
+});
+
+// package.json
+var require_package = __commonJS({
+  "package.json"(exports2, module2) {
+    module2.exports = {
+      name: "voice-normalizer",
+      version: "1.3.0-beta.3",
+      private: true,
+      description: "Adaptive voice leveler for BetterDiscord",
+      scripts: {
+        build: "node scripts/build.cjs",
+        check: "node scripts/build.cjs --check && eslint src scripts && prettier --check src scripts tests eslint.config.js package.json",
+        format: "prettier --write src scripts tests eslint.config.js package.json",
+        test: "node --test tests/*.test.cjs"
+      },
+      devDependencies: {
+        "@eslint/js": "^10.0.1",
+        esbuild: "^0.28.2",
+        eslint: "^10.13.0",
+        prettier: "^3.9.10"
+      }
+    };
+  }
+});
+
+// src/ui/dom.js
+var require_dom = __commonJS({
+  "src/ui/dom.js"(exports2, module2) {
+    "use strict";
+    function element(doc, tag, text = "", style = "") {
+      const node = doc.createElement(tag);
+      node.textContent = text;
+      node.style.cssText = style;
+      return node;
+    }
+    function button(doc, text, action) {
+      const node = element(
+        doc,
+        "button",
+        text,
+        "padding:7px 10px;border-radius:6px;border:1px solid var(--background-modifier-accent);background:var(--background-secondary);color:var(--text-normal);cursor:pointer;font:inherit;font-size:12px"
+      );
+      node.type = "button";
+      node.addEventListener("click", (event) => {
+        event.stopPropagation();
+        action();
+      });
+      return node;
+    }
+    function choices(doc, options, value, onChange, label) {
+      const root = element(doc, "div", "", "display:flex;gap:6px;flex-wrap:wrap");
+      root.setAttribute("role", "radiogroup");
+      root.setAttribute("aria-label", label);
+      const buttons = options.map(([key, text]) => {
+        const node = button(doc, text, () => onChange(key));
+        node.dataset.value = key;
+        node.setAttribute("role", "radio");
+        node.addEventListener("keydown", (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const index = options.findIndex(([option]) => option === key);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + options.length) % options.length;
+          buttons[next][1].focus();
+          onChange(options[next][0]);
+        });
+        root.append(node);
+        return [key, node];
+      });
+      const update = (selected) => {
+        for (const [key, node] of buttons) {
+          node.setAttribute("aria-checked", String(selected === key));
+          node.style.background = selected === key ? "var(--brand-500,#5865f2)" : "var(--background-secondary)";
+          node.style.color = selected === key ? "white" : "var(--text-normal)";
+        }
+      };
+      update(value);
+      return { element: root, update };
+    }
+    module2.exports = { element, button, choices };
+  }
+});
+
 // src/ui/settings-controls.js
 var require_settings_controls = __commonJS({
   "src/ui/settings-controls.js"(exports2, module2) {
     "use strict";
-    var { getPreset } = require_settings();
+    var { getPreset: getPreset2 } = require_settings();
+    var { translate: translate2 } = require_i18n();
+    var { element, choices } = require_dom();
     var FIELDS = [
-      [
-        "targetLevel",
-        "\u0426\u0435\u043B\u044C RTP (\u0443\u0441\u043B\u043E\u0432\u043D\u044B\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C)",
-        0.04,
-        0.25,
-        5e-3,
-        (v) => (v * 100).toFixed(1) + "%"
-      ],
-      ["maxGain", "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435", 1, 2, 0.05, (v) => (v * 100).toFixed(0) + "% \u043E\u0442 \u0431\u0430\u0437\u044B"],
-      [
-        "minGain",
-        "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u043E\u0441\u043B\u0430\u0431\u043B\u0435\u043D\u0438\u0435",
-        0.25,
-        1,
-        0.05,
-        (v) => (20 * Math.log10(v)).toFixed(1) + " \u0434\u0411"
-      ],
-      [
-        "attack",
-        "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u0443\u043C\u0435\u043D\u044C\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
-        0.2,
-        0.9,
-        0.05,
-        (v) => Math.round(v * 100) + "% \u0437\u0430 \u043E\u043F\u0440\u043E\u0441"
-      ],
-      [
-        "release",
-        "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u0443\u0432\u0435\u043B\u0438\u0447\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
-        0.03,
-        0.3,
-        0.01,
-        (v) => Math.round(v * 100) + "% \u0437\u0430 \u043E\u043F\u0440\u043E\u0441"
-      ]
+      ["targetLevel", 0.04, 0.25, 5e-3],
+      ["maxGain", 1, 2, 0.05],
+      ["minGain", 0.25, 1, 0.05],
+      ["attack", 0.2, 0.9, 0.05],
+      ["release", 0.03, 0.3, 0.01]
     ];
-    function createSettingsControls2(doc, initial, updateSettings) {
+    function createSettingsControls(doc, initial, updateSettings, t = (key, ...values) => translate2("en", key, ...values)) {
       let current = { ...initial };
-      const section = doc.createElement("section");
-      section.style.cssText = "padding:12px;border-radius:10px;background:var(--background-secondary);display:flex;flex-direction:column;gap:11px";
-      const heading = doc.createElement("strong");
-      heading.textContent = "\u0413\u043B\u043E\u0431\u0430\u043B\u044C\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u0438";
-      const note = doc.createElement("div");
-      note.style.cssText = "color:var(--text-muted);font-size:12px;line-height:1.35";
-      note.textContent = "\u0426\u0435\u043B\u044C RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0432\u0445\u043E\u0434\u044F\u0449\u0435\u0433\u043E \u0430\u0443\u0434\u0438\u043E, \u043D\u0435 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord. \u0423\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u043E \u0432\u043D\u0443\u0442\u0440\u0435\u043D\u043D\u0438\u043C \u043F\u043E\u0442\u043E\u043B\u043A\u043E\u043C Discord; \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.";
-      section.append(heading, note);
-      const presetRow = doc.createElement("label");
-      presetRow.style.cssText = "display:flex;gap:10px;align-items:center;justify-content:space-between";
-      const presetText = doc.createElement("span");
-      presetText.textContent = "\u041F\u0440\u043E\u0444\u0438\u043B\u044C";
-      const select = doc.createElement("select");
-      select.style.cssText = "padding:6px;background:var(--input-background);color:var(--text-normal);border:1px solid var(--background-modifier-accent);border-radius:6px";
-      for (const [key, name] of [
-        ["soft", "\u041C\u044F\u0433\u043A\u0438\u0439"],
-        ["balanced", "\u0411\u0430\u043B\u0430\u043D\u0441"],
-        ["aggressive", "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u044B\u0439"],
-        ["custom", "\u041C\u043E\u0439"]
-      ]) {
-        const option = doc.createElement("option");
-        option.value = key;
-        option.textContent = name;
-        select.append(option);
-      }
-      presetRow.append(presetText, select);
-      section.append(presetRow);
-      const controls = [];
-      function refresh() {
-        select.value = current.profile;
-        for (const { key, slider, output, format } of controls) {
-          slider.value = String(current[key]);
-          output.textContent = format(current[key]);
-        }
-      }
-      function commit(next) {
-        current = updateSettings(next);
-        refresh();
-      }
-      select.addEventListener("change", () => {
-        if (select.value === "custom") {
-          commit({ ...current, profile: "custom" });
-        } else {
-          commit(getPreset(select.value));
-        }
-      });
-      for (const [key, label, min, max, step, format] of FIELDS) {
-        const row = doc.createElement("div");
-        row.style.cssText = "display:flex;flex-direction:column;gap:5px";
-        const info = doc.createElement("div");
-        info.style.cssText = "display:flex;gap:8px;justify-content:space-between;font-size:12px";
-        const title = doc.createElement("span");
-        title.textContent = label;
-        const output = doc.createElement("span");
-        output.style.fontVariantNumeric = "tabular-nums";
-        const slider = doc.createElement("input");
+      const section = element(doc, "section", "", "display:flex;flex-direction:column;gap:8px");
+      section.append(element(doc, "h3", t("globalProfile"), "margin:0;font-size:14px"));
+      const presets = choices(
+        doc,
+        ["soft", "balanced", "aggressive", "custom"].map((key) => [key, t(key)]),
+        current.profile,
+        (profile) => {
+          const next = profile === "custom" ? { ...current, profile } : getPreset2(profile);
+          refresh(updateSettings(next));
+        },
+        t("globalProfile")
+      );
+      section.append(presets.element, element(doc, "small", t("profileNote")));
+      const advanced = element(
+        doc,
+        "details",
+        "",
+        "padding:10px;border:1px solid var(--background-modifier-accent);border-radius:8px"
+      );
+      advanced.append(element(doc, "summary", t("advanced"), "cursor:pointer;font-weight:600"));
+      const body = element(
+        doc,
+        "div",
+        "",
+        "display:flex;flex-direction:column;gap:12px;padding-top:10px"
+      );
+      body.append(element(doc, "small", t("advancedNote")));
+      advanced.append(body);
+      section.append(advanced);
+      const sliders = [];
+      for (const [key, min, max, step] of FIELDS) {
+        const row = element(doc, "label", "", "display:flex;flex-direction:column;gap:6px");
+        const output = element(doc, "span");
+        const slider = element(doc, "input");
         slider.type = "range";
         slider.min = String(min);
         slider.max = String(max);
         slider.step = String(step);
-        slider.style.width = "100%";
+        slider.dataset.setting = key;
+        slider.setAttribute("aria-label", t(key));
         slider.addEventListener("input", () => {
-          commit({ ...current, [key]: Number(slider.value), profile: "custom" });
+          refresh(updateSettings({ ...current, [key]: Number(slider.value), profile: "custom" }));
         });
-        info.append(title, output);
-        row.append(info, slider);
-        section.append(row);
-        controls.push({ key, slider, output, format });
+        row.append(output, slider);
+        body.append(row);
+        sliders.push({ key, slider, output });
       }
+      function refresh(next = current) {
+        current = { ...next };
+        presets.update(current.profile);
+        for (const { key, slider, output } of sliders) {
+          if (doc.activeElement !== slider) slider.value = String(current[key]);
+          const value = current[key];
+          const suffix = ["attack", "release"].includes(key) ? t("perPoll") : key === "targetLevel" ? "RTP" : t("baseline");
+          output.textContent = `${t(key)}: ${(value * 100).toFixed(key === "targetLevel" ? 1 : 0)}% ${suffix}`;
+        }
+      }
+      section.refresh = refresh;
+      section.advanced = advanced;
       refresh();
       return section;
     }
-    module2.exports = { createSettingsControls: createSettingsControls2 };
+    module2.exports = { createSettingsControls };
+  }
+});
+
+// src/ui/settings-panel.js
+var require_settings_panel = __commonJS({
+  "src/ui/settings-panel.js"(exports2, module2) {
+    "use strict";
+    var { version } = require_package();
+    var { element, button, choices } = require_dom();
+    var { createSettingsControls } = require_settings_controls();
+    function createSettingsPanel2(plugin, doc) {
+      const root = element(
+        doc,
+        "div",
+        "",
+        "padding:16px;display:flex;flex-direction:column;gap:16px;color:var(--text-normal)"
+      );
+      root.addEventListener("click", (event) => event.stopPropagation());
+      root.addEventListener("pointerdown", (event) => event.stopPropagation());
+      const t = (...args) => plugin.t(...args);
+      const managedIds = /* @__PURE__ */ new Set([...plugin.targets, ...plugin.preferences.excluded]);
+      let language;
+      let refreshView;
+      let advancedOpen = false;
+      const build = () => {
+        language = plugin.language();
+        root.replaceChildren();
+        const section = (key) => {
+          const node = element(doc, "section", "", "display:flex;flex-direction:column;gap:8px");
+          node.append(element(doc, "h3", t(key), "margin:0;font-size:14px"));
+          root.append(node);
+          return node;
+        };
+        root.append(element(doc, "h2", t("settingsTitle", version), "margin:0;font-size:18px"));
+        root.append(
+          element(
+            doc,
+            "p",
+            t("help"),
+            "margin:0;line-height:1.5;color:var(--text-muted);font-size:13px"
+          )
+        );
+        const languageSection = section("language");
+        const languageControl = choices(
+          doc,
+          [
+            ["auto", t("auto")],
+            ["ru", "\u0420\u0443\u0441\u0441\u043A\u0438\u0439"],
+            ["en", "English"]
+          ],
+          plugin.preferences.language,
+          (value) => plugin.updatePreferences({ language: value }),
+          t("language")
+        );
+        languageSection.append(languageControl.element);
+        const scopeSection = section("scope");
+        const scope = choices(
+          doc,
+          [
+            ["selected", t("selected")],
+            ["all", t("all")]
+          ],
+          plugin.preferences.scope,
+          (value) => plugin.updatePreferences({ scope: value }),
+          t("scope")
+        );
+        scopeSection.append(scope.element, element(doc, "small", t("scopeNote")));
+        const modeSection = section("mode");
+        const mode = choices(
+          doc,
+          [
+            ["normalize", t("normalize")],
+            ["attenuate", t("attenuate")]
+          ],
+          plugin.preferences.mode,
+          (value) => plugin.updatePreferences({ mode: value }),
+          t("mode")
+        );
+        modeSection.append(mode.element, element(doc, "small", t("modeNote")));
+        const controls = createSettingsControls(
+          doc,
+          plugin.settings,
+          (next) => plugin.updateSettings(next),
+          t
+        );
+        root.append(controls);
+        const available = section("addPeople");
+        const availableEmpty = element(doc, "small", t("noPeople"));
+        available.append(availableEmpty);
+        const availableRows = /* @__PURE__ */ new Map();
+        const managed = section("managedPeople");
+        const managedEmpty = element(doc, "small", t("noSelected"));
+        managed.append(managedEmpty);
+        const cards = /* @__PURE__ */ new Map();
+        const advanced = controls.advanced;
+        root.append(advanced);
+        advanced.open = advancedOpen;
+        advanced.addEventListener("toggle", () => {
+          advancedOpen = advanced.open;
+        });
+        const diagnostics = element(
+          doc,
+          "pre",
+          "",
+          "white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;padding:10px;background:var(--background-secondary);border-radius:6px"
+        );
+        const tests = element(doc, "div", "", "display:flex;flex-direction:column;gap:6px");
+        const testRows = /* @__PURE__ */ new Map();
+        advanced.append(tests);
+        advanced.append(element(doc, "strong", t("diagnostics")), diagnostics);
+        const allOff = button(doc, t("stopAll"), () => plugin.turnOff());
+        root.append(allOff);
+        refreshView = () => {
+          languageControl.update(plugin.preferences.language);
+          scope.update(plugin.preferences.scope);
+          mode.update(plugin.preferences.mode);
+          controls.refresh(plugin.settings);
+          const roster = plugin.participants();
+          const names = new Map(roster.map((person) => [person.id, person.name]));
+          const currentIds = new Set(roster.map((person) => person.id));
+          availableEmpty.style.display = roster.length ? "none" : "";
+          for (const [id, row] of availableRows) {
+            if (!currentIds.has(id)) {
+              row.root.remove();
+              availableRows.delete(id);
+            }
+          }
+          for (const [id, row] of testRows) {
+            if (!currentIds.has(id)) {
+              row.root.remove();
+              testRows.delete(id);
+            }
+          }
+          for (const person of roster) {
+            let testRow = testRows.get(person.id);
+            if (!testRow) {
+              const node = element(doc, "div", "", "display:flex;gap:8px;align-items:center");
+              const name = element(doc, "span", "", "flex:1");
+              const test = button(
+                doc,
+                t("test"),
+                () => plugin.halfVolumeTest(person.id).then(() => plugin.refreshPanels())
+              );
+              node.append(name, test);
+              tests.append(node);
+              testRow = { root: node, name, test };
+              testRows.set(person.id, testRow);
+            }
+            testRow.name.textContent = person.name;
+            testRow.test.disabled = plugin.enabled || plugin.testRunning;
+            let row = availableRows.get(person.id);
+            if (!row) {
+              const node = element(
+                doc,
+                "div",
+                "",
+                "display:flex;gap:8px;align-items:center;padding:8px;border-radius:6px;background:var(--background-secondary)"
+              );
+              node.dataset.userId = person.id;
+              const name = element(doc, "span", "", "flex:1");
+              const enable = button(
+                doc,
+                t("enable"),
+                () => plugin.select(person.id, !plugin.isSelected(person.id))
+              );
+              node.append(name, enable);
+              available.append(node);
+              row = { root: node, name, enable };
+              availableRows.set(person.id, row);
+            }
+            row.name.textContent = person.name;
+            const selected = plugin.isSelected(person.id);
+            row.enable.disabled = false;
+            row.enable.textContent = t(selected ? "disable" : "enable");
+            row.enable.setAttribute("aria-pressed", String(selected));
+            if (plugin.isSelected(person.id)) managedIds.add(person.id);
+          }
+          for (const id of [...plugin.targets, ...plugin.preferences.excluded]) managedIds.add(id);
+          managedEmpty.style.display = managedIds.size ? "none" : "";
+          for (const id of managedIds) {
+            let card = cards.get(id);
+            if (!card) {
+              const node = element(
+                doc,
+                "div",
+                "",
+                "padding:12px;border:1px solid var(--background-modifier-accent);border-radius:8px;display:flex;flex-direction:column;gap:8px"
+              );
+              node.dataset.userId = id;
+              const name = element(doc, "strong");
+              const status = element(doc, "div", "", "font-size:13px;color:var(--text-muted)");
+              status.setAttribute("role", "status");
+              const detail = element(doc, "small");
+              const profile = choices(
+                doc,
+                ["inherit", "soft", "balanced", "aggressive"].map((key) => [key, t(key)]),
+                plugin.profileFor(id),
+                (value) => plugin.setUserProfile(id, value),
+                t("profileFor")
+              );
+              const actions = element(doc, "div", "", "display:flex;gap:6px;flex-wrap:wrap");
+              const toggle = button(doc, "", () => plugin.select(id, !plugin.isSelected(id)));
+              const reset = button(doc, t("reset"), () => plugin.resetLearning(id));
+              actions.append(reset, toggle);
+              node.append(name, status, detail, profile.element, actions);
+              managed.append(node);
+              card = { root: node, name, status, detail, profile, toggle, reset };
+              cards.set(id, card);
+            }
+            const user = BdApi.Webpack.getStore("UserStore")?.getUser?.(id);
+            card.name.textContent = names.get(id) || user?.globalName || user?.username || id;
+            const selected = plugin.isSelected(id);
+            card.status.textContent = t(plugin.userStatus(id, roster));
+            card.detail.textContent = selected && plugin.states.has(id) ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0)) : "";
+            card.profile.update(plugin.profileFor(id));
+            card.toggle.textContent = t(selected ? "disable" : "enable");
+            card.reset.disabled = !plugin.states.has(id);
+          }
+          diagnostics.textContent = [
+            plugin.status,
+            plugin.writerInfo,
+            `scope=${plugin.preferences.scope}, mode=${plugin.preferences.mode}, selected=${plugin.targets.size}`,
+            JSON.stringify(plugin.diagnostic, null, 2),
+            plugin.mappingDebug,
+            plugin.lastWriteError
+          ].join("\n");
+        };
+      };
+      const refresh = () => {
+        if (language !== plugin.language()) build();
+        refreshView();
+      };
+      build();
+      refresh();
+      plugin.panelRefreshers.add(refresh);
+      const timer = setInterval(() => {
+        if (!root.isConnected) {
+          clearInterval(timer);
+          plugin.panels.delete(timer);
+          plugin.panelRefreshers.delete(refresh);
+          return;
+        }
+        refresh();
+      }, 400);
+      plugin.panels.add(timer);
+      return root;
+    }
+    module2.exports = { createSettingsPanel: createSettingsPanel2 };
+  }
+});
+
+// src/discord/stats-request.js
+var require_stats_request = __commonJS({
+  "src/discord/stats-request.js"(exports2, module2) {
+    "use strict";
+    function createStatsRequest2(connection, timeoutMs = 2e3) {
+      let cancel;
+      const promise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback(value);
+        };
+        const timer = setTimeout(
+          () => finish(reject, new Error("Voice statistics timed out")),
+          timeoutMs
+        );
+        cancel = () => finish(resolve, null);
+        try {
+          Promise.resolve(connection.getStats()).then(
+            (data) => finish(resolve, data),
+            (error) => finish(reject, error)
+          );
+        } catch (error) {
+          finish(reject, error);
+        }
+      });
+      return { promise, cancel: () => cancel() };
+    }
+    module2.exports = { createStatsRequest: createStatsRequest2 };
   }
 });
 
 // src/index.js
 var { createUserState, calculateGain } = require_leveler();
-var { DEFAULT_SETTINGS, normalizeSettings } = require_settings();
-var { createSettingsControls } = require_settings_controls();
+var { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require_settings();
+var { normalizePreferences } = require_preferences();
+var { languageFor, translate } = require_i18n();
+var { createSettingsPanel } = require_settings_panel();
+var { createStatsRequest } = require_stats_request();
 module.exports = class VoiceNormalizer {
   constructor() {
     this.targets = /* @__PURE__ */ new Set();
     this.states = /* @__PURE__ */ new Map();
     this.enabled = false;
+    this.started = false;
     this.timer = null;
-    this.busy = false;
+    this.pendingStats = null;
     this.generation = 0;
     this.connection = null;
     this.writer = null;
-    this.writerInfo = "\u043D\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D";
+    this.writerInfo = "Not checked";
     this.unpatches = [];
     this.panels = /* @__PURE__ */ new Set();
-    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+    this.status = "Off";
     this.diagnostic = {
       polls: 0,
       packets: 0,
@@ -282,20 +814,27 @@ module.exports = class VoiceNormalizer {
       latest: "\u2014"
     };
     this.testRunning = false;
+    this.testBaseline = null;
     this.maxInternalVolume = 200;
     this.settings = { ...DEFAULT_SETTINGS };
-    this.mappingDebug = "\u0435\u0449\u0451 \u043D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445";
-    this.lastWriteError = "\u043D\u0435\u0442";
+    this.preferences = normalizePreferences();
+    this.panelRefreshers = /* @__PURE__ */ new Set();
+    this.mappingDebug = "No data yet";
+    this.lastWriteError = "None";
   }
   start() {
+    if (this.started) return;
+    this.started = true;
     this.loadSettings();
     this.loadTargets();
+    this.loadPreferences();
     this.resolveWriter();
     this.installMenus();
     this.resume();
-    BdApi.UI.showToast("VoiceNormalizer: \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u041F\u041A\u041C \u043F\u043E \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044E", { type: "info" });
+    BdApi.UI.showToast(this.t("ready"), { type: "info" });
   }
   stop() {
+    this.started = false;
     this.cancelTest?.();
     this.suspend();
     for (const unpatch of this.unpatches) {
@@ -307,7 +846,86 @@ module.exports = class VoiceNormalizer {
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
+    this.panelRefreshers.clear();
     this.mediaProvider = null;
+  }
+  language() {
+    let locale;
+    try {
+      const store = BdApi.Webpack.getStore("LocaleStore");
+      locale = store?.locale ?? store?.getLocale?.();
+    } catch (_) {
+    }
+    return languageFor(this.preferences.language, locale);
+  }
+  t(key, ...values) {
+    return translate(this.language(), key, ...values);
+  }
+  refreshPanels() {
+    for (const refresh of this.panelRefreshers) refresh();
+  }
+  loadPreferences() {
+    try {
+      this.preferences = normalizePreferences(BdApi.Data?.load?.("VoiceNormalizer", "preferences"));
+    } catch (error) {
+      this.toast(this.t("loadError", String(error?.message || error)), "error");
+    }
+  }
+  updatePreferences(patch) {
+    this.preferences = normalizePreferences({ ...this.preferences, ...patch });
+    try {
+      BdApi.Data.save("VoiceNormalizer", "preferences", this.preferences);
+    } catch (error) {
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
+    }
+    for (const id of [...this.states.keys()]) {
+      if (!this.isSelected(id)) this.restore(id);
+    }
+    if (this.preferences.scope === "all" || this.targets.size) this.resume();
+    else this.suspend();
+    this.refreshPanels();
+    return this.preferences;
+  }
+  isSelected(id) {
+    id = String(id);
+    const self = BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id;
+    if (!id || id === self) return false;
+    return this.preferences.scope === "all" ? !this.preferences.excluded.includes(id) : this.targets.has(id);
+  }
+  effectiveTargets(participants = this.participants()) {
+    return this.preferences.scope === "all" ? new Set(participants.map((person) => person.id).filter((id) => this.isSelected(id))) : new Set(this.targets);
+  }
+  profileFor(id) {
+    return Object.hasOwn(this.preferences.profiles, String(id)) ? this.preferences.profiles[String(id)] : "inherit";
+  }
+  setUserProfile(id, profile) {
+    const profiles = { ...this.preferences.profiles };
+    if (profile === "inherit") delete profiles[String(id)];
+    else profiles[String(id)] = profile;
+    this.updatePreferences({ profiles });
+  }
+  settingsFor(id) {
+    const profile = this.profileFor(id);
+    return {
+      ...profile === "inherit" ? this.settings : getPreset(profile),
+      mode: this.preferences.mode
+    };
+  }
+  resetLearning(id) {
+    this.restore(String(id));
+    this.toast(this.t("resetDone"));
+    this.refreshPanels();
+  }
+  userStatus(id, participants = null) {
+    if (!this.started || !this.isSelected(id)) return "off";
+    if (!this.connection) return "waitingChannel";
+    const roster = participants ?? this.participants();
+    if (!roster.some((person) => person.id === String(id))) return "waitingUser";
+    if (this.read(id) === 0) return "muted";
+    const state = this.states.get(String(id));
+    if (!state || performance.now() - (state.sampleAt ?? 0) > 1500) return "unavailable";
+    if (!state.talking) return "waitingSpeech";
+    return state.voiceCount < 7 ? "learning" : "active";
   }
   loadTargets() {
     try {
@@ -318,20 +936,14 @@ module.exports = class VoiceNormalizer {
         )
       );
     } catch (error) {
-      this.toast(
-        "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + String(error?.message || error),
-        "error"
-      );
+      this.toast(this.t("loadError", String(error?.message || error)), "error");
     }
   }
   saveTargets() {
     try {
       BdApi.Data.save("VoiceNormalizer", "targets", [...this.targets]);
     } catch (error) {
-      this.toast(
-        "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0432\u044B\u0431\u043E\u0440 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439: " + String(error?.message || error),
-        "error"
-      );
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
     }
   }
   resetConnection(conn = null) {
@@ -343,18 +955,21 @@ module.exports = class VoiceNormalizer {
     this.generation++;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.pendingStats?.cancel();
+    this.pendingStats = null;
     this.resetConnection();
-    this.status = "\u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+    this.status = this.t("off");
   }
   resume() {
-    if (this.enabled || !this.targets.size) return;
+    if (!this.started || this.enabled || this.preferences.scope !== "all" && !this.targets.size)
+      return;
     this.enabled = true;
     const generation = ++this.generation;
     this.timer = setInterval(() => {
       this.tick(generation).catch(() => {
       });
     }, 100);
-    this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B \u0438 \u0440\u0435\u0447\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439";
+    this.status = this.t("waitingChannel");
   }
   loadSettings() {
     try {
@@ -369,8 +984,9 @@ module.exports = class VoiceNormalizer {
     try {
       BdApi.Data?.save?.("VoiceNormalizer", "settings", this.settings);
     } catch (error) {
-      this.status = "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: " + String(error?.message || error);
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
     }
+    this.refreshPanels();
     return { ...this.settings };
   }
   store() {
@@ -397,7 +1013,7 @@ module.exports = class VoiceNormalizer {
       }
     } catch (_) {
     }
-    this.writerInfo = "\u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D setLocalVolume";
+    this.writerInfo = "setLocalVolume not found";
     return false;
   }
   connect() {
@@ -439,7 +1055,7 @@ module.exports = class VoiceNormalizer {
       ...new Set(items.map((s) => s?.userId || s?.user_id).filter((v) => v && v !== self))
     ].map((id) => ({
       id: String(id),
-      name: users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A"
+      name: users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || this.t("participant")
     }));
   }
   toast(msg, type = "info") {
@@ -450,29 +1066,38 @@ module.exports = class VoiceNormalizer {
     }
   }
   write(id, value) {
-    if (!this.writer || !Number.isFinite(value) || value < 0 || value > this.maxInternalVolume) {
-      this.lastWriteError = "\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435 " + String(value) + " \u0432\u043D\u0435 \u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u043E\u0433\u043E \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430 0\u2013" + this.maxInternalVolume;
+    id = String(id);
+    const limit = Math.max(
+      this.maxInternalVolume,
+      this.states.get(id)?.base || 0,
+      this.testBaseline?.id === id ? this.testBaseline.base : 0
+    );
+    if (!this.writer || !Number.isFinite(value) || value < 0 || value > limit) {
+      this.lastWriteError = "Value " + String(value) + " outside allowed range 0\u2013" + limit;
       return false;
     }
     try {
       this.writer(String(id), value);
       this.diagnostic.writes++;
-      this.lastWriteError = "\u043D\u0435\u0442";
+      this.lastWriteError = "None";
       return true;
     } catch (e) {
       this.lastWriteError = String(e?.message || e);
-      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: " + this.lastWriteError;
+      this.status = this.t("volumeError", this.lastWriteError);
       return false;
     }
   }
   ceilingFor(base) {
-    return base > 4 ? 200 : Math.min(4, base * 2);
+    return base > 4 ? Math.max(200, base) : Math.min(4, base * 2);
+  }
+  volumeTolerance(reference, relative, baseline, absolute) {
+    return Math.max(Math.min(absolute, baseline * 0.01), reference * relative);
   }
   restore(id) {
     const st = this.states.get(id);
     if (!st) return;
     const now = this.read(id);
-    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= Math.max(0.03, st.lastWrite * 0.035)) {
+    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= this.volumeTolerance(st.lastWrite, 0.035, st.base, 0.03)) {
       this.write(id, st.base);
     }
     this.states.delete(id);
@@ -481,6 +1106,7 @@ module.exports = class VoiceNormalizer {
     this.suspend();
     this.targets.clear();
     this.saveTargets();
+    this.updatePreferences({ scope: "selected", excluded: [] });
   }
   select(id, on) {
     id = String(id);
@@ -488,19 +1114,19 @@ module.exports = class VoiceNormalizer {
     if (!on) {
       this.targets.delete(id);
       this.restore(id);
-      if (!this.targets.size) this.suspend();
-      else this.status = "\u0412\u044B\u0431\u0440\u0430\u043D\u043E: " + this.targets.size;
       this.saveTargets();
+      const excluded = this.preferences.scope === "all" ? [.../* @__PURE__ */ new Set([...this.preferences.excluded, id])] : this.preferences.excluded.filter((value) => value !== id);
+      this.updatePreferences({ excluded });
       return;
     }
     if (this.testRunning) {
-      this.toast("\u0417\u0430\u0432\u0435\u0440\u0448\u0438 \u0440\u0443\u0447\u043D\u043E\u0439 \u0442\u0435\u0441\u0442", "warning");
+      this.toast(this.t("testBusy"), "warning");
       return;
     }
-    if (this.targets.has(id)) return;
     this.targets.add(id);
     this.resume();
     this.saveTargets();
+    this.updatePreferences({ excluded: this.preferences.excluded.filter((value) => value !== id) });
   }
   // Discord's getUserIdBySsrc is not guaranteed to return a user ID.
   // Prefer confirmed user IDs from the local voice-state participant list.
@@ -513,7 +1139,7 @@ module.exports = class VoiceNormalizer {
     }
     const remote = conn.remoteAudioSSRCs;
     const entries = remote instanceof Map ? [...remote.entries()] : remote && typeof remote === "object" ? Object.entries(remote) : [];
-    this.mappingDebug = "remoteAudioSSRCs: " + (remote instanceof Map ? "Map" : Array.isArray(remote) ? "Array" : typeof remote) + ", \u0437\u0430\u043F\u0438\u0441\u0435\u0439: " + entries.length;
+    this.mappingDebug = "remoteAudioSSRCs: " + (remote instanceof Map ? "Map" : Array.isArray(remote) ? "Array" : typeof remote) + ", entries: " + entries.length;
     const wanted = String(ssrc);
     const matches = /* @__PURE__ */ new Set();
     for (const [rawKey, rawValue] of entries) {
@@ -562,13 +1188,14 @@ module.exports = class VoiceNormalizer {
     return { map, packets, mapped };
   }
   async tick(generation) {
-    if (!this.enabled || this.busy || this.testRunning || generation !== this.generation) return;
-    this.busy = true;
+    if (!this.enabled || this.pendingStats || this.testRunning || generation !== this.generation)
+      return;
+    let request;
     try {
       const conn = this.connect();
       if (conn !== this.connection) this.resetConnection(conn);
       if (!conn) {
-        this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B \xB7 \u0432\u044B\u0431\u043E\u0440 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D";
+        this.status = this.t("waitingChannel");
         return;
       }
       if (!this.writer) {
@@ -576,36 +1203,38 @@ module.exports = class VoiceNormalizer {
           this.resolveWriter();
           this.writerRetryAt = performance.now() + 5e3;
         }
-        this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u043C\u043E\u0434\u0443\u043B\u044C \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord";
+        this.status = this.t("writerWaiting");
         return;
       }
-      const data = await Promise.resolve(conn.getStats());
-      if (!this.enabled || generation !== this.generation) return;
+      request = createStatsRequest(conn);
+      this.pendingStats = request;
+      const data = await request.promise;
+      if (!data || !this.enabled || generation !== this.generation) return;
       if (this.connect() !== conn) {
         this.resetConnection();
         return;
       }
       const allowed = new Set(this.participants().map((person) => person.id));
       for (const id of [...this.states.keys()]) {
-        if (!allowed.has(id)) this.restore(id);
+        if (!allowed.has(id) || !this.isSelected(id)) this.restore(id);
       }
       const { map, packets, mapped } = this.collect(conn, data, allowed);
       this.diagnostic.polls++;
       this.diagnostic.packets = packets;
       this.diagnostic.mapped = mapped;
-      this.status = "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0440\u0435\u0447\u044C \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439";
-      for (const id of [...this.targets]) {
+      this.status = this.t("waitingSpeech");
+      for (const id of this.effectiveTargets([...allowed].map((id2) => ({ id: id2 })))) {
         if (!allowed.has(id)) continue;
         const input = map.get(id);
         if (!input) {
-          this.status = "SSRC \u043D\u0435 \u0441\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D \u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u043C \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u043E\u043C";
+          this.status = this.t("unavailable");
           continue;
         }
         const level = input.level;
         const now = this.read(id);
         if (!Number.isFinite(now) || now <= 0) {
           this.states.delete(id);
-          this.status = "\u041D\u0435\u0442 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438 \u0432 store";
+          this.status = this.t(now === 0 ? "muted" : "unavailable");
           continue;
         }
         let st = this.states.get(id);
@@ -614,9 +1243,10 @@ module.exports = class VoiceNormalizer {
           this.states.set(id, st);
         }
         st.lastLevel = level;
+        st.sampleAt = performance.now();
         if (st.lastWrite !== null) {
           const diff = Math.abs(now - st.lastWrite);
-          if (diff > Math.max(0.04, st.lastWrite * 0.04)) {
+          if (diff > this.volumeTolerance(st.lastWrite, 0.04, st.base, 0.04)) {
             if (performance.now() - st.lastWriteTime < 700) {
               st.writeUnconfirmed++;
               continue;
@@ -631,22 +1261,29 @@ module.exports = class VoiceNormalizer {
             st.lastSpeechSampleAt = null;
             st.talking = false;
             st.writeUnconfirmed = 0;
-            this.status = "\u0420\u0443\u0447\u043D\u0430\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0430 \u2014 \u043D\u043E\u0432\u0430\u044F \u0431\u0430\u0437\u0430";
+            this.status = this.t("manualBase");
             continue;
           }
           st.writeUnconfirmed = 0;
           this.diagnostic.confirmed++;
         }
-        const gain = calculateGain(st, level, input.detected, performance.now(), this.settings);
-        const ceiling = this.ceilingFor(st.base);
-        const desired = Math.max(0.02, Math.min(ceiling, st.base * gain));
+        const settings = this.settingsFor(id);
+        const gain = calculateGain(st, level, input.detected, performance.now(), settings);
+        const ceiling = Math.min(
+          this.ceilingFor(st.base),
+          settings.mode === "attenuate" ? st.base : Infinity
+        );
+        const floor = Math.min(0.02, st.base * settings.minGain);
+        const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
         const delta = desired - now;
-        const weight = delta < 0 ? this.settings.attack : this.settings.release;
-        const next = Math.max(0.02, Math.min(ceiling, now + delta * weight));
+        const weight = delta < 0 ? settings.attack : settings.release;
+        const next = Math.max(floor, Math.min(ceiling, now + delta * weight));
         st.lastGain = next / st.base;
-        this.diagnostic.latest = "audio=" + level.toFixed(3) + ", \u0441\u0440\u0435\u0434\u043D\u0435\u0435=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
-        this.status = "\u0410\u043A\u0442\u0438\u0432\u043D\u043E \xB7 " + this.diagnostic.latest;
-        if (Math.abs(next - now) > 8e-3) {
+        this.diagnostic.latest = "audio=" + level.toFixed(3) + ", average=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
+        this.status = this.t(
+          !st.talking ? "waitingSpeech" : st.voiceCount < 7 ? "learning" : "active"
+        );
+        if (Math.abs(next - now) > Math.min(8e-3, st.base * 5e-3)) {
           if (this.write(id, next)) {
             st.lastWrite = next;
             st.lastWriteTime = performance.now();
@@ -654,55 +1291,59 @@ module.exports = class VoiceNormalizer {
         }
       }
     } catch (e) {
+      if (!this.enabled || generation !== this.generation) return;
       this.diagnostic.failures++;
-      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430: " + String(e?.message || e);
+      this.status = this.t("error", String(e?.message || e));
     } finally {
-      this.busy = false;
+      if (this.pendingStats === request) this.pendingStats = null;
     }
   }
   async halfVolumeTest(id) {
     if (this.enabled || this.testRunning) {
-      this.toast("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043A\u043B\u044E\u0447\u0438 \u0430\u0432\u0442\u043E\u043E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0443", "warning");
+      this.toast(this.t("testBusy"), "warning");
       return;
     }
     if (!this.writer && !this.resolveWriter()) {
-      this.toast("\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u043C\u043E\u0434\u0443\u043B\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438", "warning");
+      this.toast(this.t("noWriter"), "warning");
       return;
     }
     id = String(id);
     const before = this.read(id);
     if (!Number.isFinite(before) || before <= 0) {
-      this.toast("\u041D\u0435 \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u043D\u0430 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C", "warning");
+      this.toast(this.t("noVolume"), "warning");
       return;
     }
     this.testRunning = true;
-    const target = Math.max(0.01, before * 0.5);
+    this.testBaseline = { id, base: before };
+    const target = before * 0.5;
+    const tolerance = this.volumeTolerance(target, 0.08, before, 0.035);
     try {
-      if (!this.write(id, target)) throw new Error("\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435");
-      this.status = "\u0422\u0435\u0441\u0442 \xD70.5 \u0437\u0430\u043F\u0443\u0449\u0435\u043D \u2014 3 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u043F\u043E\u043D\u0438\u0436\u0435\u043D\u043D\u043E\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438";
+      if (!this.write(id, target)) throw new Error(this.lastWriteError);
+      this.status = this.t("testStarted");
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 3e3);
         this.cancelTest = () => {
           clearTimeout(timer);
           const now = this.read(id);
-          if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+          if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
             this.write(id, before);
           resolve();
         };
       });
       const after = this.read(id);
-      const ok = Number.isFinite(after) && Math.abs(after - target) < Math.max(0.035, target * 0.08);
-      this.status = "\u0422\u0435\u0441\u0442 \xD70.5: \u0434\u043E=" + before.toFixed(4) + ", \u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F=" + target.toFixed(4) + ", Discord=" + String(Number.isFinite(after) ? after.toFixed(4) : after) + ", \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442=" + (ok ? "\u041E\u041A" : "\u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D");
+      const ok = Number.isFinite(after) && after > 0 && Math.abs(after - target) < tolerance;
+      this.status = this.t("testResult", this.t(ok ? "confirmed" : "unconfirmed"));
     } catch (e) {
-      this.status = "\u041E\u0448\u0438\u0431\u043A\u0430 \u0442\u0435\u0441\u0442\u0430: " + String(e?.message || e);
+      this.status = this.t("error", String(e?.message || e));
     } finally {
       try {
         const now = this.read(id);
-        if (Number.isFinite(now) && Math.abs(now - target) < Math.max(0.035, target * 0.08))
+        if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
           this.write(id, before);
       } catch (_) {
       }
       this.testRunning = false;
+      this.testBaseline = null;
       this.cancelTest = null;
     }
   }
@@ -741,7 +1382,7 @@ module.exports = class VoiceNormalizer {
   }
   getLiveSnapshot(id) {
     const st = this.states.get(String(id));
-    const active = this.targets.has(String(id));
+    const active = this.isSelected(id);
     const actual = this.read(id);
     const base = st?.base;
     const relative = Number.isFinite(actual) && Number.isFinite(base) && base > 0 ? actual / base : 1;
@@ -767,60 +1408,32 @@ module.exports = class VoiceNormalizer {
     this._menuMeter = ({ userId }) => {
       const [, rerender] = R.useState(0);
       R.useEffect(() => {
-        const handle = setInterval(() => rerender((t) => t + 1), 150);
-        return () => clearInterval(handle);
+        const timer = setInterval(() => rerender((value) => value + 1), 200);
+        this.panels.add(timer);
+        return () => {
+          clearInterval(timer);
+          this.panels.delete(timer);
+        };
       }, []);
       const data = this.getLiveSnapshot(userId);
-      const text = (str, style = {}) => R.createElement("div", { style }, str);
-      const bar = (value, color) => R.createElement(
-        "div",
-        {
-          style: {
-            height: 6,
-            background: "var(--background-tertiary)",
-            borderRadius: 6,
-            overflow: "hidden",
-            width: "100%"
-          }
-        },
-        R.createElement("div", {
-          style: {
-            width: (Math.max(0, Math.min(1, value)) * 100).toFixed(1) + "%",
-            height: "100%",
-            background: color,
-            borderRadius: 6,
-            transition: "width 150ms linear"
-          }
-        })
-      );
       return R.createElement(
         "div",
         {
           style: {
-            minWidth: 205,
-            maxWidth: 250,
             padding: "7px 11px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 5,
-            fontSize: 11,
+            minWidth: 205,
+            fontSize: 12,
             color: "var(--text-normal)",
             pointerEvents: "none"
           },
-          "aria-label": "VoiceNormalizer: \u0438\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u0433\u043E\u043B\u043E\u0441\u0430"
+          "aria-label": this.t("meter")
         },
-        text(data.active ? "\u041D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0430" : "\u041D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u0430", {
-          fontWeight: 600,
-          color: data.active ? "var(--text-positive)" : "var(--text-muted)"
-        }),
-        text("\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C: " + (data.level * 100).toFixed(1) + "%"),
-        bar(data.level, "var(--brand-500,#5865f2)"),
-        text("\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C: " + (data.average * 100).toFixed(1) + "%"),
-        bar(data.average, "#44bba4"),
-        text(
-          data.active && data.volumeKnown && Number.isFinite(data.base) ? "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C: " + (data.ratio * 100).toFixed(0) + "% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \xB7 " + (data.gainDb >= 0 ? "+" : "") + data.gainDb.toFixed(1) + " \u0434\u0411" : "\u0412\u043A\u043B\u044E\u0447\u0438 \u043E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0435"
-        ),
-        bar(data.active ? data.ratio / 2 : 0.5, "#faa61a")
+        R.createElement("div", null, this.t(this.userStatus(userId))),
+        data.active && Number.isFinite(data.base) ? R.createElement(
+          "div",
+          { style: { marginTop: 5, color: "var(--text-muted)" } },
+          this.t("correction", (data.ratio * 100).toFixed(0))
+        ) : null
       );
     };
     return this._menuMeter;
@@ -834,10 +1447,33 @@ module.exports = class VoiceNormalizer {
           const item = BdApi.ContextMenu.buildItem({
             id: "voice-normalizer-toggle",
             type: "toggle",
-            label: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430",
-            checked: this.targets.has(String(id)),
-            action: () => this.select(id, !this.targets.has(String(id)))
+            label: this.t("toggle"),
+            checked: this.isSelected(id),
+            action: () => this.select(id, !this.isSelected(id))
           });
+          const controls = BdApi.ContextMenu.buildItem({
+            type: "submenu",
+            id: "voice-normalizer-options",
+            label: "VoiceNormalizer",
+            items: [
+              ...["inherit", "soft", "balanced", "aggressive"].map((profile) => ({
+                type: "radio",
+                id: "voice-normalizer-profile-" + profile,
+                group: "voice-normalizer-profile",
+                label: this.t(profile),
+                checked: this.profileFor(id) === profile,
+                action: () => this.setUserProfile(id, profile)
+              })),
+              { type: "separator" },
+              {
+                id: "voice-normalizer-reset",
+                label: this.t("reset"),
+                disabled: !this.states.has(String(id)),
+                action: () => this.resetLearning(id)
+              }
+            ]
+          });
+          if (controls) this.insertNearVolume(tree, controls);
           try {
             const meter = BdApi.ContextMenu.buildItem({
               type: "control",
@@ -846,7 +1482,7 @@ module.exports = class VoiceNormalizer {
             });
             if (meter) this.insertNearVolume(tree, meter);
           } catch (error) {
-            this.status = "\u0418\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u0432 \u041F\u041A\u041C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D: " + String(error?.message || error);
+            this.status = this.t("error", String(error?.message || error));
           }
           this.insertNearVolume(tree, item);
         });
@@ -856,139 +1492,6 @@ module.exports = class VoiceNormalizer {
     }
   }
   getSettingsPanel() {
-    const root = document.createElement("div");
-    root.style.cssText = "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
-    const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer \xB7 1.2.1 Alpha";
-    title.style.margin = "0";
-    const help = document.createElement("p");
-    help.textContent = "\u041F\u041A\u041C \u043D\u0430 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0435 \u2192 \u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u0442\u044C \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0433\u043E\u043B\u043E\u0441\u0430. \u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F \u043F\u043E user ID \u043F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u043A\u0430 Discord \u0438 \u0441\u043C\u0435\u043D\u044B \u043A\u0430\u043D\u0430\u043B\u0430. \u0412 \u043D\u043E\u0432\u043E\u043C \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0438 \u0441\u0440\u0435\u0434\u043D\u0438\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C \u0440\u0435\u0447\u0438 \u0432\u044B\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F \u0437\u0430\u043D\u043E\u0432\u043E. \u041F\u0440\u0438 \u043C\u043E\u043B\u0447\u0430\u043D\u0438\u0438 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435 \u043D\u0435 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442\u0441\u044F.";
-    help.style.cssText = "margin:0;color:var(--text-muted);line-height:1.4";
-    const livePanel = document.createElement("div");
-    livePanel.style.cssText = "display:flex;flex-direction:column;gap:8px";
-    const debug = document.createElement("pre");
-    debug.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:9px;background:var(--background-secondary);font-size:12px";
-    const people = document.createElement("div");
-    people.style.cssText = "display:flex;flex-direction:column;gap:8px;max-height:240px;overflow:auto";
-    const actions = document.createElement("div");
-    actions.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
-    const makeButton = (text, fn, secondary = false) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = text;
-      b.style.cssText = "padding:9px 12px;border-radius:9px;border:0;cursor:pointer;font-weight:600;color:white;background:" + (secondary ? "var(--background-tertiary)" : "var(--brand-500,#5865f2)");
-      b.onclick = fn;
-      return b;
-    };
-    const refresh = () => {
-      people.replaceChildren();
-      const list = this.participants();
-      for (const person of list) {
-        const line = document.createElement("div");
-        line.style.cssText = "display:flex;gap:8px;align-items:center;padding:9px;background:var(--background-secondary);border-radius:9px";
-        const name = document.createElement("span");
-        name.textContent = person.name;
-        name.style.flex = "1";
-        const test = makeButton(
-          "\u0422\u0435\u0441\u0442 \xD70.5",
-          () => this.halfVolumeTest(person.id).then(render),
-          true
-        );
-        test.disabled = this.enabled || this.testRunning;
-        const enabled = this.targets.has(person.id);
-        const toggle = makeButton(enabled ? "\u0412\u044B\u043A\u043B\u044E\u0447\u0438\u0442\u044C" : "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C", () => {
-          this.select(person.id, !enabled);
-          refresh();
-          render();
-        });
-        line.append(name, test, toggle);
-        people.append(line);
-      }
-      if (!list.length) people.textContent = "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B.";
-    };
-    const render = () => {
-      livePanel.replaceChildren();
-      const roster = new Map(this.participants().map((p) => [p.id, p.name]));
-      if (!this.targets.size) {
-        const empty = document.createElement("div");
-        empty.textContent = "\u0416\u0438\u0432\u043E\u0439 \u0438\u043D\u0434\u0438\u043A\u0430\u0442\u043E\u0440 \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u043D\u043E\u0440\u043C\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u0438.";
-        empty.style.cssText = "color:var(--text-muted);font-size:12px";
-        livePanel.append(empty);
-      }
-      for (const id of this.targets) {
-        const v = this.getLiveSnapshot(id);
-        const card = document.createElement("div");
-        card.style.cssText = "background:var(--background-secondary);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px";
-        const name = document.createElement("div");
-        name.textContent = roster.get(id) || BdApi.Webpack.getStore("UserStore")?.getUser?.(id)?.username || id;
-        name.style.cssText = "font-weight:700;font-size:13px";
-        const detail = document.createElement("div");
-        detail.style.cssText = "font-size:12px;color:var(--text-muted)";
-        detail.textContent = "\u0413\u043E\u043B\u043E\u0441 " + (v.level * 100).toFixed(1) + "% \xB7 \u0421\u0440\u0435\u0434\u043D\u0435\u0435 " + (v.average * 100).toFixed(1) + "% \xB7 \u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C " + (v.ratio * 100).toFixed(0) + "% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 (" + (v.gainDb >= 0 ? "+" : "") + v.gainDb.toFixed(1) + " \u0434\u0411)";
-        const track = document.createElement("div");
-        track.style.cssText = "height:7px;overflow:hidden;border-radius:6px;background:var(--background-tertiary);position:relative";
-        const fill = document.createElement("div");
-        fill.style.cssText = "height:100%;background:var(--brand-500,#5865f2);transition:width 200ms";
-        fill.style.width = Math.min(100, Math.max(0, v.ratio * 50)).toFixed(1) + "%";
-        const baseMark = document.createElement("div");
-        baseMark.style.cssText = "position:absolute;left:50%;top:0;height:100%;width:2px;background:var(--text-normal);opacity:.55";
-        track.append(fill, baseMark);
-        const remove = makeButton(
-          "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F",
-          () => {
-            this.select(id, false);
-            refresh();
-            render();
-          },
-          true
-        );
-        if (!this.states.has(id))
-          detail.textContent = "\u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D \xB7 \u043E\u0436\u0438\u0434\u0430\u0435\u043C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430 \u0438 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435";
-        card.append(name, detail, track, remove);
-        livePanel.append(card);
-      }
-      debug.textContent = [
-        "\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435: " + this.status,
-        "\u041C\u043E\u0434\u0443\u043B\u044C: " + this.writerInfo,
-        "\u0412\u044B\u0431\u0440\u0430\u043D\u043E: " + this.targets.size + ", \u043E\u043F\u0440\u043E\u0441\u043E\u0432: " + this.diagnostic.polls,
-        "\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0445 \u043F\u043E\u0442\u043E\u043A\u043E\u0432: " + this.diagnostic.packets + ", \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u044B \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0438: " + this.diagnostic.mapped,
-        "\u0417\u0430\u043F\u0438\u0441\u0435\u0439 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438: " + this.diagnostic.writes + ", \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0439: " + this.diagnostic.confirmed,
-        "\u0421\u043E\u043F\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D\u0438\u0435: " + this.mappingDebug,
-        "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043E\u0448\u0438\u0431\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438: " + this.lastWriteError,
-        "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435: " + this.diagnostic.latest
-      ].join("\n");
-    };
-    const stop = makeButton(
-      "\u25A0 \u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
-      () => {
-        this.turnOff();
-        refresh();
-        render();
-      },
-      true
-    );
-    const reload = makeButton("\u21BB \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432", () => {
-      refresh();
-      render();
-    });
-    actions.append(stop, reload);
-    const controls = createSettingsControls(
-      document,
-      this.settings,
-      (next) => this.updateSettings(next)
-    );
-    root.append(title, help, controls, livePanel, people, actions, debug);
-    refresh();
-    render();
-    const timer = setInterval(() => {
-      if (!root.isConnected) {
-        clearInterval(timer);
-        this.panels.delete(timer);
-        return;
-      }
-      render();
-    }, 400);
-    this.panels.add(timer);
-    return root;
+    return createSettingsPanel(this, document);
   }
 };
