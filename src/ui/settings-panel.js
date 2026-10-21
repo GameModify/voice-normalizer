@@ -159,15 +159,19 @@ function createSettingsPanel(plugin, doc) {
           );
           node.dataset.userId = person.id;
           const name = element(doc, "span", "", "flex:1");
-          const enable = button(doc, t("enable"), () => plugin.select(person.id, true));
+          const enable = button(doc, t("enable"), () =>
+            plugin.select(person.id, !plugin.isSelected(person.id)),
+          );
           node.append(name, enable);
           available.append(node);
           row = { root: node, name, enable };
           availableRows.set(person.id, row);
         }
         row.name.textContent = person.name;
-        row.enable.disabled = plugin.isSelected(person.id);
-        row.enable.textContent = t(row.enable.disabled ? "enabled" : "enable");
+        const selected = plugin.isSelected(person.id);
+        row.enable.disabled = false;
+        row.enable.textContent = t(selected ? "disable" : "enable");
+        row.enable.setAttribute("aria-pressed", String(selected));
         if (plugin.isSelected(person.id)) managedIds.add(person.id);
       }
       for (const id of [...plugin.targets, ...plugin.preferences.excluded]) managedIds.add(id);

@@ -242,3 +242,33 @@ test("editing settings on a disabled plugin cannot start voice processing", asyn
   await p.tick(p.generation);
   assert(p.states.has("a"));
 });
+
+test("the top participant button toggles both ways in selected and everyone scopes", (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  const panel = p.getSettingsPanel();
+  const section = panel.children.find((node) => node.children[0]?.textContent === p.t("addPeople"));
+  const row = section.children.find((node) => node.dataset.userId === "a");
+  const toggle = row.children[1];
+  assert.equal(toggle.disabled, false);
+  toggle.fire("click");
+  assert.equal(p.isSelected("a"), true);
+  assert.equal(toggle.textContent, p.t("disable"));
+  assert.equal(toggle.attributes["aria-pressed"], "true");
+  toggle.fire("click");
+  assert.equal(p.isSelected("a"), false);
+  assert.equal(toggle.textContent, p.t("enable"));
+  p.updatePreferences({ scope: "all" });
+  assert.equal(p.isSelected("a"), true);
+  assert.equal(toggle.disabled, false);
+  toggle.fire("click");
+  assert.equal(p.isSelected("a"), false);
+  assert(p.preferences.excluded.includes("a"));
+  toggle.fire("click");
+  assert.equal(p.isSelected("a"), true);
+  assert.equal(p.preferences.excluded.includes("a"), false);
+  assert.equal(
+    section.children.find((node) => node.dataset.userId === "a"),
+    row,
+  );
+});

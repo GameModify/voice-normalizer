@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.2
+ * @version 1.3.0-beta.3
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -208,7 +208,7 @@ var require_i18n = __commonJS({
       modeNote: "Only reduce never raises volume above the person's Discord baseline.",
       language: "Language",
       auto: "Discord language",
-      addPeople: "Enable for people",
+      addPeople: "Channel participants",
       managedPeople: "Selected people",
       excludedPeople: "Excluded from everyone mode",
       noPeople: "Join a voice channel to see participants.",
@@ -286,7 +286,7 @@ var require_i18n = __commonJS({
       modeNote: "\u0412 \u0440\u0435\u0436\u0438\u043C\u0435 \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043D\u0435 \u043F\u043E\u0434\u043D\u0438\u043C\u0430\u0435\u0442\u0441\u044F \u0432\u044B\u0448\u0435 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u0432 Discord.",
       language: "\u042F\u0437\u044B\u043A",
       auto: "\u041A\u0430\u043A \u0432 Discord",
-      addPeople: "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432",
+      addPeople: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043A\u0430\u043D\u0430\u043B\u0430",
       managedPeople: "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438",
       excludedPeople: "\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0437 \u0440\u0435\u0436\u0438\u043C\u0430 \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
       noPeople: "\u0412\u043E\u0439\u0434\u0438\u0442\u0435 \u0432 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B, \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432.",
@@ -341,7 +341,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.2",
+      version: "1.3.0-beta.3",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -657,15 +657,21 @@ var require_settings_panel = __commonJS({
               );
               node.dataset.userId = person.id;
               const name = element(doc, "span", "", "flex:1");
-              const enable = button(doc, t("enable"), () => plugin.select(person.id, true));
+              const enable = button(
+                doc,
+                t("enable"),
+                () => plugin.select(person.id, !plugin.isSelected(person.id))
+              );
               node.append(name, enable);
               available.append(node);
               row = { root: node, name, enable };
               availableRows.set(person.id, row);
             }
             row.name.textContent = person.name;
-            row.enable.disabled = plugin.isSelected(person.id);
-            row.enable.textContent = t(row.enable.disabled ? "enabled" : "enable");
+            const selected = plugin.isSelected(person.id);
+            row.enable.disabled = false;
+            row.enable.textContent = t(selected ? "disable" : "enable");
+            row.enable.setAttribute("aria-pressed", String(selected));
             if (plugin.isSelected(person.id)) managedIds.add(person.id);
           }
           for (const id of [...plugin.targets, ...plugin.preferences.excluded]) managedIds.add(id);
