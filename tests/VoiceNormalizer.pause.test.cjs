@@ -1,3 +1,5 @@
+const { mockClock } = require("./clock.cjs");
+const advanceClock = mockClock();
 const assert = require("node:assert/strict");
 const Plugin = require("../VoiceNormalizer.plugin.js");
 let loudness = 0.55,
@@ -15,6 +17,7 @@ const conn = {
     return undefined;
   },
   getStats() {
+    advanceClock();
     return Promise.resolve({
       rtp: { inbound: { audio: [{ ssrc: 123, audioLevel: loudness, audioDetected: isTalking }] } },
     });

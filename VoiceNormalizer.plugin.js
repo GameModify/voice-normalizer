@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.5
+ * @version 1.3.0-beta.6
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -109,14 +109,17 @@ var require_leveler = __commonJS({
         stableGain: 1,
         activityPolls: 0,
         lastSpeechSampleAt: null,
-        talking: false
+        talking: false,
+        envelopeAt: null,
+        recoveryHoldMs: 0
       };
     }
     function calculateGain2(state, level, detected, timestamp, settings = DEFAULT_SETTINGS2) {
       const { active, confirmed } = detectSpeech(state, level, detected);
       if (confirmed) {
         const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
-        const alpha = 1 - Math.exp(-elapsed / 3e3);
+        const window = state.ema !== null && level < state.ema ? 6e3 : 3e3;
+        const alpha = 1 - Math.exp(-elapsed / window);
         state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
         state.lastSpeechSampleAt = timestamp;
         state.voiceCount++;
@@ -127,13 +130,45 @@ var require_leveler = __commonJS({
       } else if (confirmed && level > 0.18) {
         gain = Math.min(1, 0.18 / level);
       }
-      if (active && level > 0.18) gain = Math.min(gain, 0.18 / level);
       gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
       if (settings.mode === "attenuate") gain = Math.min(1, gain);
       if (confirmed) state.stableGain = gain;
+      if (active && level > 0.18) gain = Math.max(settings.minGain, Math.min(gain, 0.18 / level));
       return gain;
     }
     module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2 };
+  }
+});
+
+// src/audio/gain-envelope.js
+var require_gain_envelope = __commonJS({
+  "src/audio/gain-envelope.js"(exports2, module2) {
+    "use strict";
+    var RECOVERY_HOLD_MS = 900;
+    var DEADBAND = Math.log(1.015);
+    function smoothVolume2(state, current, desired, timestamp, settings) {
+      let elapsed = state.envelopeAt === null ? 100 : Math.max(0, Math.min(250, timestamp - state.envelopeAt));
+      state.envelopeAt = timestamp;
+      if (!state.activityPolls) return current;
+      const difference = Math.log(desired / current);
+      if (Math.abs(difference) <= DEADBAND) return current;
+      const reducing = difference < 0;
+      if (reducing) {
+        state.recoveryHoldMs = RECOVERY_HOLD_MS;
+      } else {
+        if (!state.talking) return current;
+        const held = Math.min(state.recoveryHoldMs, elapsed);
+        state.recoveryHoldMs -= held;
+        elapsed -= held;
+        if (elapsed <= 0) return current;
+      }
+      const speed = reducing ? settings.attack : settings.release;
+      const weight = 1 - Math.pow(1 - speed, elapsed / 100);
+      const maxStep = speed * (reducing ? 3 : 2) * elapsed / 1e3;
+      const step = Math.max(-maxStep, Math.min(maxStep, difference * weight));
+      return current * Math.exp(step);
+    }
+    module2.exports = { smoothVolume: smoothVolume2 };
   }
 });
 
@@ -224,13 +259,13 @@ var require_i18n = __commonJS({
       excluded: "Excluded",
       stopAll: "Disable for everyone",
       advanced: "Advanced",
-      advancedNote: "RTP is relative audio statistics, not Discord slider percentage or LUFS. This is not an instant audio limiter.",
+      advancedNote: "RTP is relative audio statistics, not Discord slider percentage or LUFS. Recovery is held after attenuation, then limited in speed during speech. This is not an instant audio limiter.",
       targetLevel: "Target RTP level",
       maxGain: "Maximum boost",
       minGain: "Minimum gain",
       attack: "Volume reduction speed",
       release: "Volume increase speed",
-      perPoll: "per poll",
+      perPoll: "per 100 ms",
       baseline: "of baseline",
       correction: "Volume: {0}% of baseline",
       diagnostics: "Diagnostics",
@@ -305,13 +340,13 @@ var require_i18n = __commonJS({
       excluded: "\u0418\u0441\u043A\u043B\u044E\u0447\u0451\u043D",
       stopAll: "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
       advanced: "\u0414\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u043E",
-      advancedNote: "RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0430\u0443\u0434\u0438\u043E, \u0430 \u043D\u0435 \u043F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord \u0438\u043B\u0438 LUFS. \u042D\u0442\u043E \u043D\u0435 \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u043E\u043B\u0438\u043C\u0438\u0442\u0435\u0440.",
+      advancedNote: "RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0430\u0443\u0434\u0438\u043E, \u0430 \u043D\u0435 \u043F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord \u0438\u043B\u0438 LUFS. \u041F\u043E\u0441\u043B\u0435 \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F \u0432\u043E\u0437\u0432\u0440\u0430\u0442 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0438 \u0438\u0434\u0451\u0442 \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u042D\u0442\u043E \u043D\u0435 \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u043E\u043B\u0438\u043C\u0438\u0442\u0435\u0440.",
       targetLevel: "\u0426\u0435\u043B\u0435\u0432\u043E\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C RTP",
       maxGain: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435",
       minGain: "\u041C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043A\u043E\u044D\u0444\u0444\u0438\u0446\u0438\u0435\u043D\u0442 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
       attack: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F",
       release: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u043E\u0432\u044B\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
-      perPoll: "\u0437\u0430 \u043E\u043F\u0440\u043E\u0441",
+      perPoll: "\u0437\u0430 100 \u043C\u0441",
       baseline: "\u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
       correction: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C: {0}% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
       diagnostics: "\u0414\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430",
@@ -347,7 +382,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.5",
+      version: "1.3.0-beta.6",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -841,6 +876,7 @@ var require_stats_request = __commonJS({
 
 // src/index.js
 var { createUserState, calculateGain } = require_leveler();
+var { smoothVolume } = require_gain_envelope();
 var { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require_settings();
 var { normalizePreferences } = require_preferences();
 var { languageFor, translate } = require_i18n();
@@ -1308,16 +1344,10 @@ module.exports = class VoiceNormalizer {
               st.writeUnconfirmed++;
               continue;
             }
-            st.base = now;
-            st.ema = null;
-            st.voiceCount = 0;
-            st.lastWrite = null;
-            st.lastGain = 1;
-            st.stableGain = 1;
-            st.activityPolls = 0;
-            st.lastSpeechSampleAt = null;
-            st.talking = false;
-            st.writeUnconfirmed = 0;
+            st = createUserState(now);
+            st.lastLevel = level;
+            st.sampleAt = performance.now();
+            this.states.set(id, st);
             this.status = this.t("manualBase");
             continue;
           }
@@ -1325,16 +1355,18 @@ module.exports = class VoiceNormalizer {
           this.diagnostic.confirmed++;
         }
         const settings = this.settingsFor(id);
-        const gain = calculateGain(st, level, input.detected, performance.now(), settings);
+        const timestamp = performance.now();
+        const gain = calculateGain(st, level, input.detected, timestamp, settings);
         const ceiling = Math.min(
           this.ceilingFor(st.base),
           settings.mode === "attenuate" ? st.base : Infinity
         );
         const floor = Math.min(0.02, st.base * settings.minGain);
         const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
-        const delta = desired - now;
-        const weight = delta < 0 ? settings.attack : settings.release;
-        const next = Math.max(floor, Math.min(ceiling, now + delta * weight));
+        const next = Math.max(
+          floor,
+          Math.min(ceiling, smoothVolume(st, now, desired, timestamp, settings))
+        );
         st.lastGain = next / st.base;
         this.diagnostic.latest = "audio=" + level.toFixed(3) + ", average=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
         this.status = this.t(
