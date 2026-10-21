@@ -1,4 +1,4 @@
-const { createUserState, calculateGain } = require("./audio/leveler");
+const { createUserState, calculateGain, interruptSpeech } = require("./audio/leveler");
 const { smoothVolume } = require("./audio/gain-envelope");
 const { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require("./audio/settings");
 const { normalizePreferences } = require("./preferences");
@@ -489,6 +489,8 @@ module.exports = class VoiceNormalizer {
         if (!allowed.has(id)) continue;
         const input = map.get(id);
         if (!input) {
+          const state = this.states.get(id);
+          if (state) interruptSpeech(state);
           this.status = this.t("unavailable");
           continue;
         }
