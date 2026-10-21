@@ -9,7 +9,7 @@
 ## Установка
 
 1. Установите [BetterDiscord](https://betterdiscord.app/).
-2. [Скачайте VoiceNormalizer.plugin.js](https://github.com/GameModify/voice-normalizer/raw/refs/heads/main/VoiceNormalizer.plugin.js) и положите в папку плагинов. На Windows: `%APPDATA%\BetterDiscord\plugins`.
+2. [Скачайте VoiceNormalizer.plugin.js](https://github.com/GameModify/voice-normalizer/releases/latest/download/VoiceNormalizer.plugin.js) и положите в папку плагинов. На Windows: `%APPDATA%\BetterDiscord\plugins`.
 3. Включите VoiceNormalizer в настройках BetterDiscord.
 
 Скачивать весь репозиторий и устанавливать Node.js не нужно — достаточно одного файла плагина.
