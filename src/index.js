@@ -1,6 +1,8 @@
 const { createUserState, calculateGain } = require("./audio/leveler");
-const { DEFAULT_SETTINGS, normalizeSettings } = require("./audio/settings");
-const { createSettingsControls } = require("./ui/settings-controls");
+const { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require("./audio/settings");
+const { normalizePreferences } = require("./preferences");
+const { languageFor, translate } = require("./i18n");
+const { createSettingsPanel } = require("./ui/settings-panel");
 
 module.exports = class VoiceNormalizer {
   constructor() {
@@ -12,10 +14,10 @@ module.exports = class VoiceNormalizer {
     this.generation = 0;
     this.connection = null;
     this.writer = null;
-    this.writerInfo = "не проверен";
+    this.writerInfo = "Not checked";
     this.unpatches = [];
     this.panels = new Set();
-    this.status = "Выключено";
+    this.status = "Off";
     this.diagnostic = {
       polls: 0,
       packets: 0,
@@ -29,16 +31,19 @@ module.exports = class VoiceNormalizer {
     // Discord builds can expose percent-like or amplitude-like internal volumes.
     this.maxInternalVolume = 200;
     this.settings = { ...DEFAULT_SETTINGS };
-    this.mappingDebug = "ещё нет данных";
-    this.lastWriteError = "нет";
+    this.preferences = normalizePreferences();
+    this.panelRefreshers = new Set();
+    this.mappingDebug = "No data yet";
+    this.lastWriteError = "None";
   }
   start() {
     this.loadSettings();
     this.loadTargets();
+    this.loadPreferences();
     this.resolveWriter();
     this.installMenus();
     this.resume();
-    BdApi.UI.showToast("VoiceNormalizer: настройки и ПКМ по пользователю", { type: "info" });
+    BdApi.UI.showToast(this.t("ready"), { type: "info" });
   }
   stop() {
     this.cancelTest?.();
@@ -51,7 +56,90 @@ module.exports = class VoiceNormalizer {
     this.unpatches = [];
     for (const t of this.panels) clearInterval(t);
     this.panels.clear();
+    this.panelRefreshers.clear();
     this.mediaProvider = null;
+  }
+  language() {
+    let locale;
+    try {
+      const store = BdApi.Webpack.getStore("LocaleStore");
+      locale = store?.locale ?? store?.getLocale?.();
+    } catch (_) {}
+    return languageFor(this.preferences.language, locale);
+  }
+  t(key, ...values) {
+    return translate(this.language(), key, ...values);
+  }
+  refreshPanels() {
+    for (const refresh of this.panelRefreshers) refresh();
+  }
+  loadPreferences() {
+    try {
+      this.preferences = normalizePreferences(BdApi.Data?.load?.("VoiceNormalizer", "preferences"));
+    } catch (error) {
+      this.toast(this.t("loadError", String(error?.message || error)), "error");
+    }
+  }
+  updatePreferences(patch) {
+    this.preferences = normalizePreferences({ ...this.preferences, ...patch });
+    try {
+      BdApi.Data.save("VoiceNormalizer", "preferences", this.preferences);
+    } catch (error) {
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
+    }
+    for (const id of [...this.states.keys()]) {
+      if (!this.isSelected(id)) this.restore(id);
+    }
+    if (this.preferences.scope === "all" || this.targets.size) this.resume();
+    else this.suspend();
+    this.refreshPanels();
+    return this.preferences;
+  }
+  isSelected(id) {
+    id = String(id);
+    const self = BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id;
+    if (!id || id === self) return false;
+    return this.preferences.scope === "all"
+      ? !this.preferences.excluded.includes(id)
+      : this.targets.has(id);
+  }
+  effectiveTargets(participants = this.participants()) {
+    return this.preferences.scope === "all"
+      ? new Set(participants.map((person) => person.id).filter((id) => this.isSelected(id)))
+      : new Set(this.targets);
+  }
+  profileFor(id) {
+    return Object.hasOwn(this.preferences.profiles, String(id))
+      ? this.preferences.profiles[String(id)]
+      : "inherit";
+  }
+  setUserProfile(id, profile) {
+    const profiles = { ...this.preferences.profiles };
+    if (profile === "inherit") delete profiles[String(id)];
+    else profiles[String(id)] = profile;
+    this.updatePreferences({ profiles });
+  }
+  settingsFor(id) {
+    const profile = this.profileFor(id);
+    return {
+      ...(profile === "inherit" ? this.settings : getPreset(profile)),
+      mode: this.preferences.mode,
+    };
+  }
+  resetLearning(id) {
+    this.restore(String(id));
+    this.toast(this.t("resetDone"));
+    this.refreshPanels();
+  }
+  userStatus(id) {
+    if (!this.isSelected(id)) return "off";
+    if (!this.connection) return "waitingChannel";
+    if (!this.participants().some((person) => person.id === String(id))) return "waitingUser";
+    if (this.read(id) === 0) return "muted";
+    const state = this.states.get(String(id));
+    if (!state || performance.now() - (state.sampleAt ?? 0) > 1500) return "unavailable";
+    if (!state.talking) return "waitingSpeech";
+    return state.voiceCount < 7 ? "learning" : "active";
   }
   loadTargets() {
     try {
@@ -62,20 +150,14 @@ module.exports = class VoiceNormalizer {
         ),
       );
     } catch (error) {
-      this.toast(
-        "Не удалось загрузить выбранных пользователей: " + String(error?.message || error),
-        "error",
-      );
+      this.toast(this.t("loadError", String(error?.message || error)), "error");
     }
   }
   saveTargets() {
     try {
       BdApi.Data.save("VoiceNormalizer", "targets", [...this.targets]);
     } catch (error) {
-      this.toast(
-        "Не удалось сохранить выбор пользователей: " + String(error?.message || error),
-        "error",
-      );
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
     }
   }
   resetConnection(conn = null) {
@@ -88,16 +170,16 @@ module.exports = class VoiceNormalizer {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.resetConnection();
-    this.status = "Выключено";
+    this.status = this.t("off");
   }
   resume() {
-    if (this.enabled || !this.targets.size) return;
+    if (this.enabled || (this.preferences.scope !== "all" && !this.targets.size)) return;
     this.enabled = true;
     const generation = ++this.generation;
     this.timer = setInterval(() => {
       this.tick(generation).catch(() => {});
     }, 100);
-    this.status = "Ожидаем голосовой канал и речь выбранных пользователей";
+    this.status = this.t("waitingChannel");
   }
   loadSettings() {
     try {
@@ -112,8 +194,9 @@ module.exports = class VoiceNormalizer {
     try {
       BdApi.Data?.save?.("VoiceNormalizer", "settings", this.settings);
     } catch (error) {
-      this.status = "Не удалось сохранить настройки: " + String(error?.message || error);
+      this.toast(this.t("saveError", String(error?.message || error)), "error");
     }
+    this.refreshPanels();
     return { ...this.settings };
   }
   store() {
@@ -143,7 +226,7 @@ module.exports = class VoiceNormalizer {
         return true;
       }
     } catch (_) {}
-    this.writerInfo = "не найден setLocalVolume";
+    this.writerInfo = "setLocalVolume not found";
     return false;
   }
   connect() {
@@ -191,7 +274,8 @@ module.exports = class VoiceNormalizer {
       ...new Set(items.map((s) => s?.userId || s?.user_id).filter((v) => v && v !== self)),
     ].map((id) => ({
       id: String(id),
-      name: users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || "Участник",
+      name:
+        users?.getUser?.(id)?.globalName || users?.getUser?.(id)?.username || this.t("participant"),
     }));
   }
   toast(msg, type = "info") {
@@ -203,17 +287,17 @@ module.exports = class VoiceNormalizer {
   write(id, value) {
     if (!this.writer || !Number.isFinite(value) || value < 0 || value > this.maxInternalVolume) {
       this.lastWriteError =
-        "значение " + String(value) + " вне допустимого диапазона 0–" + this.maxInternalVolume;
+        "Value " + String(value) + " outside allowed range 0–" + this.maxInternalVolume;
       return false;
     }
     try {
       this.writer(String(id), value);
       this.diagnostic.writes++;
-      this.lastWriteError = "нет";
+      this.lastWriteError = "None";
       return true;
     } catch (e) {
       this.lastWriteError = String(e?.message || e);
-      this.status = "Ошибка записи громкости: " + this.lastWriteError;
+      this.status = this.t("volumeError", this.lastWriteError);
       return false;
     }
   }
@@ -238,6 +322,7 @@ module.exports = class VoiceNormalizer {
     this.suspend();
     this.targets.clear();
     this.saveTargets();
+    this.updatePreferences({ scope: "selected", excluded: [] });
   }
   select(id, on) {
     id = String(id);
@@ -245,19 +330,22 @@ module.exports = class VoiceNormalizer {
     if (!on) {
       this.targets.delete(id);
       this.restore(id);
-      if (!this.targets.size) this.suspend();
-      else this.status = "Выбрано: " + this.targets.size;
       this.saveTargets();
+      const excluded =
+        this.preferences.scope === "all"
+          ? [...new Set([...this.preferences.excluded, id])]
+          : this.preferences.excluded.filter((value) => value !== id);
+      this.updatePreferences({ excluded });
       return;
     }
     if (this.testRunning) {
-      this.toast("Заверши ручной тест", "warning");
+      this.toast(this.t("testBusy"), "warning");
       return;
     }
-    if (this.targets.has(id)) return;
     this.targets.add(id);
     this.resume();
     this.saveTargets();
+    this.updatePreferences({ excluded: this.preferences.excluded.filter((value) => value !== id) });
   }
   // Discord's getUserIdBySsrc is not guaranteed to return a user ID.
   // Prefer confirmed user IDs from the local voice-state participant list.
@@ -277,7 +365,7 @@ module.exports = class VoiceNormalizer {
     this.mappingDebug =
       "remoteAudioSSRCs: " +
       (remote instanceof Map ? "Map" : Array.isArray(remote) ? "Array" : typeof remote) +
-      ", записей: " +
+      ", entries: " +
       entries.length;
     const wanted = String(ssrc);
     const matches = new Set();
@@ -346,7 +434,7 @@ module.exports = class VoiceNormalizer {
       const conn = this.connect();
       if (conn !== this.connection) this.resetConnection(conn);
       if (!conn) {
-        this.status = "Ожидаем голосовой канал · выбор пользователей сохранён";
+        this.status = this.t("waitingChannel");
         return;
       }
       if (!this.writer) {
@@ -354,7 +442,7 @@ module.exports = class VoiceNormalizer {
           this.resolveWriter();
           this.writerRetryAt = performance.now() + 5000;
         }
-        this.status = "Ожидаем модуль управления громкостью Discord";
+        this.status = this.t("writerWaiting");
         return;
       }
       const data = await Promise.resolve(conn.getStats());
@@ -366,18 +454,18 @@ module.exports = class VoiceNormalizer {
       }
       const allowed = new Set(this.participants().map((person) => person.id));
       for (const id of [...this.states.keys()]) {
-        if (!allowed.has(id)) this.restore(id);
+        if (!allowed.has(id) || !this.isSelected(id)) this.restore(id);
       }
       const { map, packets, mapped } = this.collect(conn, data, allowed);
       this.diagnostic.polls++;
       this.diagnostic.packets = packets;
       this.diagnostic.mapped = mapped;
-      this.status = "Ожидаем речь выбранных пользователей";
-      for (const id of [...this.targets]) {
+      this.status = this.t("waitingSpeech");
+      for (const id of this.effectiveTargets([...allowed].map((id) => ({ id })))) {
         if (!allowed.has(id)) continue;
         const input = map.get(id);
         if (!input) {
-          this.status = "SSRC не сопоставлен с выбранным человеком";
+          this.status = this.t("unavailable");
           continue;
         }
         const level = input.level;
@@ -385,7 +473,7 @@ module.exports = class VoiceNormalizer {
         if (!Number.isFinite(now) || now <= 0) {
           // Keep muted users muted and recalibrate if their slider is raised later.
           this.states.delete(id);
-          this.status = "Нет значения громкости в store";
+          this.status = this.t(now === 0 ? "muted" : "unavailable");
           continue;
         }
         let st = this.states.get(id);
@@ -394,6 +482,7 @@ module.exports = class VoiceNormalizer {
           this.states.set(id, st);
         }
         st.lastLevel = level;
+        st.sampleAt = performance.now();
         if (st.lastWrite !== null) {
           const diff = Math.abs(now - st.lastWrite);
           if (diff > Math.max(0.04, st.lastWrite * 0.04)) {
@@ -412,23 +501,28 @@ module.exports = class VoiceNormalizer {
             st.lastSpeechSampleAt = null;
             st.talking = false;
             st.writeUnconfirmed = 0;
-            this.status = "Ручная громкость изменена — новая база";
+            this.status = this.t("manualBase");
             continue;
           }
           st.writeUnconfirmed = 0;
           this.diagnostic.confirmed++;
         }
-        const gain = calculateGain(st, level, input.detected, performance.now(), this.settings);
-        const ceiling = this.ceilingFor(st.base);
-        const desired = Math.max(0.02, Math.min(ceiling, st.base * gain));
+        const settings = this.settingsFor(id);
+        const gain = calculateGain(st, level, input.detected, performance.now(), settings);
+        const ceiling = Math.min(
+          this.ceilingFor(st.base),
+          settings.mode === "attenuate" ? st.base : Infinity,
+        );
+        const floor = Math.min(0.02, st.base);
+        const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
         const delta = desired - now;
-        const weight = delta < 0 ? this.settings.attack : this.settings.release;
-        const next = Math.max(0.02, Math.min(ceiling, now + delta * weight));
+        const weight = delta < 0 ? settings.attack : settings.release;
+        const next = Math.max(floor, Math.min(ceiling, now + delta * weight));
         st.lastGain = next / st.base;
         this.diagnostic.latest =
           "audio=" +
           level.toFixed(3) +
-          ", среднее=" +
+          ", average=" +
           (st.ema ?? 0).toFixed(3) +
           ", gain=" +
           st.lastGain.toFixed(2) +
@@ -436,7 +530,9 @@ module.exports = class VoiceNormalizer {
           now.toFixed(3) +
           "→" +
           next.toFixed(3);
-        this.status = "Активно · " + this.diagnostic.latest;
+        this.status = this.t(
+          !st.talking ? "waitingSpeech" : st.voiceCount < 7 ? "learning" : "active",
+        );
         if (Math.abs(next - now) > 0.008) {
           if (this.write(id, next)) {
             st.lastWrite = next;
@@ -446,31 +542,31 @@ module.exports = class VoiceNormalizer {
       }
     } catch (e) {
       this.diagnostic.failures++;
-      this.status = "Ошибка: " + String(e?.message || e);
+      this.status = this.t("error", String(e?.message || e));
     } finally {
       this.busy = false;
     }
   }
   async halfVolumeTest(id) {
     if (this.enabled || this.testRunning) {
-      this.toast("Сначала выключи автообработку", "warning");
+      this.toast(this.t("testBusy"), "warning");
       return;
     }
     if (!this.writer && !this.resolveWriter()) {
-      this.toast("Не найден модуль громкости", "warning");
+      this.toast(this.t("noWriter"), "warning");
       return;
     }
     id = String(id);
     const before = this.read(id);
     if (!Number.isFinite(before) || before <= 0) {
-      this.toast("Не прочитана громкость", "warning");
+      this.toast(this.t("noVolume"), "warning");
       return;
     }
     this.testRunning = true;
     const target = Math.max(0.01, before * 0.5);
     try {
-      if (!this.write(id, target)) throw new Error("не удалось отправить значение");
-      this.status = "Тест ×0.5 запущен — 3 секунды пониженной громкости";
+      if (!this.write(id, target)) throw new Error(this.lastWriteError);
+      this.status = this.t("testStarted");
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 3000);
         this.cancelTest = () => {
@@ -484,17 +580,9 @@ module.exports = class VoiceNormalizer {
       const after = this.read(id);
       const ok =
         Number.isFinite(after) && Math.abs(after - target) < Math.max(0.035, target * 0.08);
-      this.status =
-        "Тест ×0.5: до=" +
-        before.toFixed(4) +
-        ", ожидается=" +
-        target.toFixed(4) +
-        ", Discord=" +
-        String(Number.isFinite(after) ? after.toFixed(4) : after) +
-        ", результат=" +
-        (ok ? "ОК" : "не подтверждён");
+      this.status = this.t("testResult", this.t(ok ? "confirmed" : "unconfirmed"));
     } catch (e) {
-      this.status = "Ошибка теста: " + String(e?.message || e);
+      this.status = this.t("error", String(e?.message || e));
     } finally {
       try {
         const now = this.read(id);
@@ -542,7 +630,7 @@ module.exports = class VoiceNormalizer {
   }
   getLiveSnapshot(id) {
     const st = this.states.get(String(id));
-    const active = this.targets.has(String(id));
+    const active = this.isSelected(id);
     const actual = this.read(id);
     const base = st?.base;
     const relative =
@@ -569,68 +657,34 @@ module.exports = class VoiceNormalizer {
     this._menuMeter = ({ userId }) => {
       const [, rerender] = R.useState(0);
       R.useEffect(() => {
-        const handle = setInterval(() => rerender((t) => t + 1), 150);
-        return () => clearInterval(handle);
+        const timer = setInterval(() => rerender((value) => value + 1), 200);
+        this.panels.add(timer);
+        return () => {
+          clearInterval(timer);
+          this.panels.delete(timer);
+        };
       }, []);
       const data = this.getLiveSnapshot(userId);
-      const text = (str, style = {}) => R.createElement("div", { style }, str);
-      const bar = (value, color) =>
-        R.createElement(
-          "div",
-          {
-            style: {
-              height: 6,
-              background: "var(--background-tertiary)",
-              borderRadius: 6,
-              overflow: "hidden",
-              width: "100%",
-            },
-          },
-          R.createElement("div", {
-            style: {
-              width: (Math.max(0, Math.min(1, value)) * 100).toFixed(1) + "%",
-              height: "100%",
-              background: color,
-              borderRadius: 6,
-              transition: "width 150ms linear",
-            },
-          }),
-        );
       return R.createElement(
         "div",
         {
           style: {
-            minWidth: 205,
-            maxWidth: 250,
             padding: "7px 11px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 5,
-            fontSize: 11,
+            minWidth: 205,
+            fontSize: 12,
             color: "var(--text-normal)",
             pointerEvents: "none",
           },
-          "aria-label": "VoiceNormalizer: индикатор голоса",
+          "aria-label": this.t("meter"),
         },
-        text(data.active ? "Нормализация: включена" : "Нормализация: выключена", {
-          fontWeight: 600,
-          color: data.active ? "var(--text-positive)" : "var(--text-muted)",
-        }),
-        text("Входящий уровень: " + (data.level * 100).toFixed(1) + "%"),
-        bar(data.level, "var(--brand-500,#5865f2)"),
-        text("Средний уровень: " + (data.average * 100).toFixed(1) + "%"),
-        bar(data.average, "#44bba4"),
-        text(
-          data.active && data.volumeKnown && Number.isFinite(data.base)
-            ? "Громкость: " +
-                (data.ratio * 100).toFixed(0) +
-                "% от исходной · " +
-                (data.gainDb >= 0 ? "+" : "") +
-                data.gainDb.toFixed(1) +
-                " дБ"
-            : "Включи обработку, чтобы увидеть изменение",
-        ),
-        bar(data.active ? data.ratio / 2 : 0.5, "#faa61a"),
+        R.createElement("div", null, this.t(this.userStatus(userId))),
+        data.active && Number.isFinite(data.base)
+          ? R.createElement(
+              "div",
+              { style: { marginTop: 5, color: "var(--text-muted)" } },
+              this.t("correction", (data.ratio * 100).toFixed(0)),
+            )
+          : null,
       );
     };
     return this._menuMeter;
@@ -644,10 +698,33 @@ module.exports = class VoiceNormalizer {
           const item = BdApi.ContextMenu.buildItem({
             id: "voice-normalizer-toggle",
             type: "toggle",
-            label: "Выравнивать громкость голоса",
-            checked: this.targets.has(String(id)),
-            action: () => this.select(id, !this.targets.has(String(id))),
+            label: this.t("toggle"),
+            checked: this.isSelected(id),
+            action: () => this.select(id, !this.isSelected(id)),
           });
+          const controls = BdApi.ContextMenu.buildItem({
+            type: "submenu",
+            id: "voice-normalizer-options",
+            label: "VoiceNormalizer",
+            items: [
+              ...["inherit", "soft", "balanced", "aggressive"].map((profile) => ({
+                type: "radio",
+                id: "voice-normalizer-profile-" + profile,
+                group: "voice-normalizer-profile",
+                label: this.t(profile),
+                checked: this.profileFor(id) === profile,
+                action: () => this.setUserProfile(id, profile),
+              })),
+              { type: "separator" },
+              {
+                id: "voice-normalizer-reset",
+                label: this.t("reset"),
+                disabled: !this.states.has(String(id)),
+                action: () => this.resetLearning(id),
+              },
+            ],
+          });
+          if (controls) this.insertNearVolume(tree, controls);
           // React clears the meter's refresh interval when the menu unmounts.
           try {
             const meter = BdApi.ContextMenu.buildItem({
@@ -658,7 +735,7 @@ module.exports = class VoiceNormalizer {
             });
             if (meter) this.insertNearVolume(tree, meter);
           } catch (error) {
-            this.status = "Индикатор в ПКМ недоступен: " + String(error?.message || error);
+            this.status = this.t("error", String(error?.message || error));
           }
           this.insertNearVolume(tree, item);
         });
@@ -667,165 +744,6 @@ module.exports = class VoiceNormalizer {
     }
   }
   getSettingsPanel() {
-    const root = document.createElement("div");
-    root.style.cssText =
-      "padding:18px;display:flex;flex-direction:column;gap:12px;color:var(--text-normal)";
-    const title = document.createElement("h3");
-    title.textContent = "VoiceNormalizer · 1.2.1 Alpha";
-    title.style.margin = "0";
-    const help = document.createElement("p");
-    help.textContent =
-      "ПКМ на участнике → Выравнивать громкость голоса. Выбор сохраняется по user ID после перезапуска Discord и смены канала. В новом соединении средний уровень речи вычисляется заново. При молчании усиление не увеличивается.";
-    help.style.cssText = "margin:0;color:var(--text-muted);line-height:1.4";
-    const livePanel = document.createElement("div");
-    livePanel.style.cssText = "display:flex;flex-direction:column;gap:8px";
-    const debug = document.createElement("pre");
-    debug.style.cssText =
-      "white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:9px;background:var(--background-secondary);font-size:12px";
-    const people = document.createElement("div");
-    people.style.cssText =
-      "display:flex;flex-direction:column;gap:8px;max-height:240px;overflow:auto";
-    const actions = document.createElement("div");
-    actions.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
-    const makeButton = (text, fn, secondary = false) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = text;
-      b.style.cssText =
-        "padding:9px 12px;border-radius:9px;border:0;cursor:pointer;font-weight:600;color:white;background:" +
-        (secondary ? "var(--background-tertiary)" : "var(--brand-500,#5865f2)");
-      b.onclick = fn;
-      return b;
-    };
-    const refresh = () => {
-      people.replaceChildren();
-      const list = this.participants();
-      for (const person of list) {
-        const line = document.createElement("div");
-        line.style.cssText =
-          "display:flex;gap:8px;align-items:center;padding:9px;background:var(--background-secondary);border-radius:9px";
-        const name = document.createElement("span");
-        name.textContent = person.name;
-        name.style.flex = "1";
-        const test = makeButton(
-          "Тест ×0.5",
-          () => this.halfVolumeTest(person.id).then(render),
-          true,
-        );
-        test.disabled = this.enabled || this.testRunning;
-        const enabled = this.targets.has(person.id);
-        const toggle = makeButton(enabled ? "Выключить" : "Включить", () => {
-          this.select(person.id, !enabled);
-          refresh();
-          render();
-        });
-        line.append(name, test, toggle);
-        people.append(line);
-      }
-      if (!list.length) people.textContent = "Участники не найдены. Проверь голосовой канал.";
-    };
-    const render = () => {
-      livePanel.replaceChildren();
-      const roster = new Map(this.participants().map((p) => [p.id, p.name]));
-      if (!this.targets.size) {
-        const empty = document.createElement("div");
-        empty.textContent = "Живой индикатор появится после включения нормализации.";
-        empty.style.cssText = "color:var(--text-muted);font-size:12px";
-        livePanel.append(empty);
-      }
-      for (const id of this.targets) {
-        const v = this.getLiveSnapshot(id);
-        const card = document.createElement("div");
-        card.style.cssText =
-          "background:var(--background-secondary);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px";
-        const name = document.createElement("div");
-        name.textContent =
-          roster.get(id) || BdApi.Webpack.getStore("UserStore")?.getUser?.(id)?.username || id;
-        name.style.cssText = "font-weight:700;font-size:13px";
-        const detail = document.createElement("div");
-        detail.style.cssText = "font-size:12px;color:var(--text-muted)";
-        detail.textContent =
-          "Голос " +
-          (v.level * 100).toFixed(1) +
-          "% · Среднее " +
-          (v.average * 100).toFixed(1) +
-          "% · Громкость " +
-          (v.ratio * 100).toFixed(0) +
-          "% от исходной (" +
-          (v.gainDb >= 0 ? "+" : "") +
-          v.gainDb.toFixed(1) +
-          " дБ)";
-        const track = document.createElement("div");
-        track.style.cssText =
-          "height:7px;overflow:hidden;border-radius:6px;background:var(--background-tertiary);position:relative";
-        const fill = document.createElement("div");
-        fill.style.cssText =
-          "height:100%;background:var(--brand-500,#5865f2);transition:width 200ms";
-        fill.style.width = Math.min(100, Math.max(0, v.ratio * 50)).toFixed(1) + "%";
-        const baseMark = document.createElement("div");
-        baseMark.style.cssText =
-          "position:absolute;left:50%;top:0;height:100%;width:2px;background:var(--text-normal);opacity:.55";
-        track.append(fill, baseMark);
-        const remove = makeButton(
-          "Отключить для пользователя",
-          () => {
-            this.select(id, false);
-            refresh();
-            render();
-          },
-          true,
-        );
-        if (!this.states.has(id))
-          detail.textContent = "Выбор сохранён · ожидаем участника и голосовые данные";
-        card.append(name, detail, track, remove);
-        livePanel.append(card);
-      }
-      debug.textContent = [
-        "Состояние: " + this.status,
-        "Модуль: " + this.writerInfo,
-        "Выбрано: " + this.targets.size + ", опросов: " + this.diagnostic.polls,
-        "Входящих потоков: " +
-          this.diagnostic.packets +
-          ", определены пользователи: " +
-          this.diagnostic.mapped,
-        "Записей громкости: " +
-          this.diagnostic.writes +
-          ", подтверждений: " +
-          this.diagnostic.confirmed,
-        "Сопоставление: " + this.mappingDebug,
-        "Последняя ошибка записи: " + this.lastWriteError,
-        "Последнее: " + this.diagnostic.latest,
-      ].join("\n");
-    };
-    const stop = makeButton(
-      "■ Отключить для всех",
-      () => {
-        this.turnOff();
-        refresh();
-        render();
-      },
-      true,
-    );
-    const reload = makeButton("↻ Обновить участников", () => {
-      refresh();
-      render();
-    });
-    actions.append(stop, reload);
-    const controls = createSettingsControls(document, this.settings, (next) =>
-      this.updateSettings(next),
-    );
-    root.append(title, help, controls, livePanel, people, actions, debug);
-    refresh();
-    render();
-    const timer = setInterval(() => {
-      if (!root.isConnected) {
-        clearInterval(timer);
-        this.panels.delete(timer);
-        return;
-      }
-      render();
-    }, 400);
-    this.panels.add(timer);
-    return root;
+    return createSettingsPanel(this, document);
   }
 };
