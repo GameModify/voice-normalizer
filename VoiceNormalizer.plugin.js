@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.6
+ * @version 1.3.0-beta.7
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -111,10 +111,22 @@ var require_leveler = __commonJS({
         lastSpeechSampleAt: null,
         talking: false,
         envelopeAt: null,
-        recoveryHoldMs: 0
+        recoveryHoldMs: 0,
+        lastObservationAt: null
       };
     }
+    function interruptSpeech2(state) {
+      state.activityPolls = 0;
+      state.talking = false;
+      state.lastSpeechSampleAt = null;
+      state.lastObservationAt = null;
+      state.envelopeAt = null;
+    }
     function calculateGain2(state, level, detected, timestamp, settings = DEFAULT_SETTINGS2) {
+      if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500) {
+        interruptSpeech2(state);
+      }
+      state.lastObservationAt = timestamp;
       const { active, confirmed } = detectSpeech(state, level, detected);
       if (confirmed) {
         const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
@@ -136,7 +148,7 @@ var require_leveler = __commonJS({
       if (active && level > 0.18) gain = Math.max(settings.minGain, Math.min(gain, 0.18 / level));
       return gain;
     }
-    module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2 };
+    module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2, interruptSpeech: interruptSpeech2 };
   }
 });
 
@@ -382,7 +394,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.6",
+      version: "1.3.0-beta.7",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -875,7 +887,7 @@ var require_stats_request = __commonJS({
 });
 
 // src/index.js
-var { createUserState, calculateGain } = require_leveler();
+var { createUserState, calculateGain, interruptSpeech } = require_leveler();
 var { smoothVolume } = require_gain_envelope();
 var { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require_settings();
 var { normalizePreferences } = require_preferences();
@@ -1320,6 +1332,8 @@ module.exports = class VoiceNormalizer {
         if (!allowed.has(id)) continue;
         const input = map.get(id);
         if (!input) {
+          const state = this.states.get(id);
+          if (state) interruptSpeech(state);
           this.status = this.t("unavailable");
           continue;
         }
