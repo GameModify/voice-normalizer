@@ -9,6 +9,7 @@ module.exports = class VoiceNormalizer {
     this.targets = new Set();
     this.states = new Map();
     this.enabled = false;
+    this.started = false;
     this.timer = null;
     this.busy = false;
     this.generation = 0;
@@ -37,6 +38,8 @@ module.exports = class VoiceNormalizer {
     this.lastWriteError = "None";
   }
   start() {
+    if (this.started) return;
+    this.started = true;
     this.loadSettings();
     this.loadTargets();
     this.loadPreferences();
@@ -46,6 +49,7 @@ module.exports = class VoiceNormalizer {
     BdApi.UI.showToast(this.t("ready"), { type: "info" });
   }
   stop() {
+    this.started = false;
     this.cancelTest?.();
     this.suspend();
     for (const unpatch of this.unpatches) {
@@ -132,7 +136,7 @@ module.exports = class VoiceNormalizer {
     this.refreshPanels();
   }
   userStatus(id) {
-    if (!this.isSelected(id)) return "off";
+    if (!this.started || !this.isSelected(id)) return "off";
     if (!this.connection) return "waitingChannel";
     if (!this.participants().some((person) => person.id === String(id))) return "waitingUser";
     if (this.read(id) === 0) return "muted";
@@ -173,7 +177,8 @@ module.exports = class VoiceNormalizer {
     this.status = this.t("off");
   }
   resume() {
-    if (this.enabled || (this.preferences.scope !== "all" && !this.targets.size)) return;
+    if (!this.started || this.enabled || (this.preferences.scope !== "all" && !this.targets.size))
+      return;
     this.enabled = true;
     const generation = ++this.generation;
     this.timer = setInterval(() => {
