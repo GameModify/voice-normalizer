@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.4
+ * @version 1.3.0-beta.5
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -347,7 +347,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.4",
+      version: "1.3.0-beta.5",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -1501,6 +1501,7 @@ module.exports = class VoiceNormalizer {
         const unpatch = BdApi.ContextMenu.patch(nav, (tree, props) => {
           const id = props?.user?.id;
           if (!id || id === BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id) return;
+          const [, rerenderMenu] = BdApi.React.useState(0);
           const item = BdApi.ContextMenu.buildItem({
             id: "voice-normalizer-toggle",
             type: "toggle",
@@ -1519,7 +1520,10 @@ module.exports = class VoiceNormalizer {
                 group: "voice-normalizer-profile",
                 label: this.t(profile),
                 checked: this.profileFor(id) === profile,
-                action: () => this.setUserProfile(id, profile)
+                action: () => {
+                  this.setUserProfile(id, profile);
+                  rerenderMenu((value) => value + 1);
+                }
               })),
               { type: "separator" },
               {

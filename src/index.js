@@ -721,6 +721,9 @@ module.exports = class VoiceNormalizer {
         const unpatch = BdApi.ContextMenu.patch(nav, (tree, props) => {
           const id = props?.user?.id;
           if (!id || id === BdApi.Webpack.getStore("UserStore")?.getCurrentUser?.()?.id) return;
+          // Like ContextMenu.buildItem's toggle hook, this belongs to the menu render.
+          // Radio items have no built-in state: refresh their checked props on click.
+          const [, rerenderMenu] = BdApi.React.useState(0);
           const item = BdApi.ContextMenu.buildItem({
             id: "voice-normalizer-toggle",
             type: "toggle",
@@ -739,7 +742,10 @@ module.exports = class VoiceNormalizer {
                 group: "voice-normalizer-profile",
                 label: this.t(profile),
                 checked: this.profileFor(id) === profile,
-                action: () => this.setUserProfile(id, profile),
+                action: () => {
+                  this.setUserProfile(id, profile);
+                  rerenderMenu((value) => value + 1);
+                },
               })),
               { type: "separator" },
               {
