@@ -11,6 +11,7 @@ function makePlugin(t, level, inputSettings) {
   const advanceClock = mockClock(t);
   let detected = 1;
   let interval = 100;
+  let missing = false;
   let volume = 100;
   const conn = {
     context: "default",
@@ -21,7 +22,11 @@ function makePlugin(t, level, inputSettings) {
     getStats() {
       advanceClock(interval);
       return {
-        rtp: { inbound: { audio: [{ ssrc: 42, audioLevel: level, audioDetected: detected }] } },
+        rtp: {
+          inbound: {
+            audio: missing ? [] : [{ ssrc: 42, audioLevel: level, audioDetected: detected }],
+          },
+        },
       };
     },
   };
@@ -117,6 +122,9 @@ function makePlugin(t, level, inputSettings) {
     },
     setInterval: (next) => {
       interval = next;
+    },
+    setMissing: (next) => {
+      missing = next;
     },
   };
 }
@@ -234,4 +242,55 @@ test("release speed follows elapsed polling time, and a stalled poll cannot caus
     state.getVolume() < previous * 1.052,
     "missing statistics do not spend seconds of recovery at once",
   );
+});
+
+test("missing participant statistics require fresh speech without losing the baseline or average", async (t) => {
+  const state = makePlugin(t, 0.045, getPreset("balanced"));
+  await poll(state, 5);
+  const session = state.plugin.states.get("friend");
+  const volume = state.getVolume();
+  const average = session.ema;
+  const count = session.voiceCount;
+  state.setMissing(true);
+  await poll(state, 2);
+  assert.equal(session.talking, false);
+  assert.equal(state.getVolume(), volume);
+  state.setMissing(false);
+  await poll(state, 2);
+  assert.equal(state.getVolume(), volume, "one or two returning samples cannot raise volume");
+  assert.equal(session.voiceCount, count);
+  assert.equal(session.ema, average);
+  await poll(state);
+  assert.equal(session.talking, true);
+  assert(state.getVolume() > volume);
+  assert.equal(session.base, 100);
+  state.plugin.turnOff();
+  assert.equal(state.getVolume(), 100);
+});
+
+test("a long polling gap removes speech confidence but keeps first-frame loud protection", async (t) => {
+  const state = makePlugin(t, 0.045, getPreset("balanced"));
+  await poll(state, 5);
+  const session = state.plugin.states.get("friend");
+  const volume = state.getVolume();
+  const count = session.voiceCount;
+  state.setInterval(5000);
+  await poll(state);
+  assert.equal(state.getVolume(), volume);
+  assert.equal(session.talking, false);
+  assert.equal(session.voiceCount, count);
+  state.setInterval(100);
+  await poll(state);
+  assert.equal(state.getVolume(), volume);
+  await poll(state);
+  assert(state.getVolume() > volume, "confirmed speech resumes ordinary recovery");
+  state.setInput(0.8);
+  state.setInterval(5000);
+  const beforePeak = state.getVolume();
+  await poll(state);
+  assert(
+    state.getVolume() < beforePeak,
+    "a loud peak can still reduce volume before speech confirmation",
+  );
+  assert.equal(session.talking, false);
 });

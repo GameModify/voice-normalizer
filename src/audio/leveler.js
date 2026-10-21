@@ -19,7 +19,18 @@ function createUserState(base) {
     talking: false,
     envelopeAt: null,
     recoveryHoldMs: 0,
+    lastObservationAt: null,
   };
+}
+
+// Missing statistics are not evidence of continuous speech. Preserve the
+// learned level and current attenuation, but require a fresh speech sequence.
+function interruptSpeech(state) {
+  state.activityPolls = 0;
+  state.talking = false;
+  state.lastSpeechSampleAt = null;
+  state.lastObservationAt = null;
+  state.envelopeAt = null;
 }
 
 /**
@@ -27,6 +38,10 @@ function createUserState(base) {
  * Isolated events may trigger ducking, but never affect the learned average.
  */
 function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SETTINGS) {
+  if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500) {
+    interruptSpeech(state);
+  }
+  state.lastObservationAt = timestamp;
   const { active, confirmed } = detectSpeech(state, level, detected);
   if (confirmed) {
     const elapsed =
@@ -57,4 +72,4 @@ function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SET
   return gain;
 }
 
-module.exports = { createUserState, calculateGain };
+module.exports = { createUserState, calculateGain, interruptSpeech };
