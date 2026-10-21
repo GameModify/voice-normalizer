@@ -1,0 +1,228 @@
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const Plugin = require("../VoiceNormalizer.plugin.js");
+const { createDocument, traverse } = require("./fake-dom.cjs");
+const { en, ru, languageFor, translate } = require("../src/i18n");
+
+function fixture(t) {
+  const saved = {};
+  const volume = new Map([
+    ["a", 100],
+    ["b", 80],
+    ["self", 100],
+  ]);
+  let roster = ["a", "b", "self"];
+  let level = 0.03;
+  const conn = {
+    getUserIdBySsrc: (ssrc) => roster[ssrc - 1],
+    getStats: () => ({
+      rtp: {
+        inbound: {
+          audio: roster.map((_, index) => ({
+            ssrc: index + 1,
+            audioLevel: level,
+            audioDetected: level > 0 ? 1 : 0,
+          })),
+        },
+      },
+    }),
+  };
+  const stores = {
+    LocaleStore: { locale: "ru" },
+    UserStore: { getCurrentUser: () => ({ id: "self" }), getUser: (id) => ({ username: id }) },
+    MediaEngineStore: { getLocalVolume: (id) => volume.get(id) ?? 100 },
+    VoiceStateStore: {
+      getCurrentClientVoiceChannelId: () => "room",
+      getVoiceStatesForChannel: () => roster.map((userId) => ({ userId })),
+    },
+  };
+  global.BdApi = {
+    Data: {
+      load: (_, key) => saved[key],
+      save: (_, key, value) => {
+        saved[key] = structuredClone(value);
+      },
+    },
+    Webpack: {
+      getStore: (name) => stores[name],
+      getModule: (predicate) =>
+        [
+          { setLocalVolume: (id, value) => volume.set(id, value) },
+          { getMediaEngine: () => ({ eachConnection: (cb) => cb(conn) }) },
+        ].find(predicate),
+    },
+    UI: { showToast() {} },
+    ContextMenu: { patch: () => () => {} },
+  };
+  global.document = createDocument();
+  const plugins = [];
+  const create = () => {
+    const p = new Plugin();
+    p.start();
+    plugins.push(p);
+    return p;
+  };
+  t.after(() => {
+    plugins.forEach((p) => p.stop());
+    delete global.document;
+  });
+  return {
+    create,
+    volume,
+    saved,
+    stores,
+    setRoster: (value) => {
+      roster = value;
+    },
+    setLevel: (value) => {
+      level = value;
+    },
+  };
+}
+
+test("everyone mode follows new participants, excludes self, and survives restart", async (t) => {
+  const f = fixture(t);
+  let p = f.create();
+  p.updatePreferences({ scope: "all" });
+  for (let i = 0; i < 15; i++) await p.tick(p.generation);
+  assert(f.volume.get("a") > 100);
+  assert(f.volume.get("b") > 80);
+  assert.equal(f.volume.get("self"), 100);
+  f.setRoster(["a", "b", "c", "self"]);
+  await p.tick(p.generation);
+  assert(p.states.has("c"));
+  p.stop();
+  p = f.create();
+  assert.equal(p.preferences.scope, "all");
+  await p.tick(p.generation);
+  assert(p.states.has("a"));
+});
+
+test("everyone exclusions persist; returning to selected restores other people", async (t) => {
+  const f = fixture(t);
+  let p = f.create();
+  p.select("a", true);
+  p.updatePreferences({ scope: "all" });
+  f.setLevel(0.6);
+  await p.tick(p.generation);
+  assert(f.volume.get("b") < 80);
+  p.select("b", false);
+  assert.equal(f.volume.get("b"), 80);
+  assert.equal(p.isSelected("b"), false);
+  p.stop();
+  p = f.create();
+  assert.equal(p.isSelected("b"), false);
+  p.select("b", true);
+  await p.tick(p.generation);
+  p.select("b", false);
+  p.updatePreferences({ scope: "selected" });
+  assert.deepEqual([...p.effectiveTargets()], ["a"]);
+  assert.equal(f.volume.get("b"), 80);
+});
+
+test("reduce-only never boosts quiet voices and takes effect after a boosted session", async (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  p.updatePreferences({ scope: "all", mode: "attenuate" });
+  for (let i = 0; i < 15; i++) await p.tick(p.generation);
+  assert.equal(f.volume.get("a"), 100);
+  assert.equal(f.volume.get("b"), 80);
+  p.updatePreferences({ mode: "normalize" });
+  for (let i = 0; i < 15; i++) await p.tick(p.generation);
+  assert(f.volume.get("a") > 100);
+  p.updatePreferences({ mode: "attenuate" });
+  await p.tick(p.generation);
+  assert(f.volume.get("a") <= 100);
+  f.setLevel(0.8);
+  await p.tick(p.generation);
+  assert(f.volume.get("a") < 100);
+});
+
+test("individual profiles persist, inherit global changes, and reset learning preserves choice", async (t) => {
+  const f = fixture(t);
+  let p = f.create();
+  p.select("a", true);
+  p.setUserProfile("a", "soft");
+  assert.equal(p.settingsFor("a").maxGain, 1.3);
+  p.updateSettings({ ...p.settings, maxGain: 1.6, profile: "custom" });
+  assert.equal(p.settingsFor("b").maxGain, 1.6);
+  assert.equal(p.settingsFor("a").maxGain, 1.3);
+  for (let i = 0; i < 15; i++) await p.tick(p.generation);
+  assert(p.states.get("a").voiceCount > 7);
+  p.resetLearning("a");
+  assert.equal(f.volume.get("a"), 100);
+  assert(p.targets.has("a"));
+  await p.tick(p.generation);
+  assert.equal(p.states.get("a").voiceCount, 0);
+  p.stop();
+  p = f.create();
+  assert.equal(p.profileFor("a"), "soft");
+  p.setUserProfile("a", "inherit");
+  assert.equal(p.settingsFor("a").maxGain, 1.6);
+});
+
+test("friendly statuses distinguish learning, active speech, pauses, and mute", async (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  p.select("a", true);
+  assert.equal(p.userStatus("a"), "waitingChannel");
+  for (let i = 0; i < 3; i++) await p.tick(p.generation);
+  assert.equal(p.userStatus("a"), "learning");
+  for (let i = 0; i < 10; i++) await p.tick(p.generation);
+  assert.equal(p.userStatus("a"), "active");
+  f.setLevel(0);
+  await p.tick(p.generation);
+  assert.equal(p.userStatus("a"), "waitingSpeech");
+  f.volume.set("a", 0);
+  assert.equal(p.userStatus("a"), "muted");
+});
+
+test("profile and participant controls keep their DOM nodes during updates", (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  p.select("a", true);
+  const panel = p.getSettingsPanel();
+  const section = (label) => panel.children.find((node) => node.children[0]?.textContent === label);
+  const addSection = section(p.t("addPeople"));
+  const managedSection = section(p.t("managedPeople"));
+  assert(panel.children.indexOf(addSection) < panel.children.indexOf(managedSection));
+  const availableRow = addSection.children.find((node) => node.dataset.userId === "a");
+  const card = managedSection.children.find((node) => node.dataset.userId === "a");
+  const soft = traverse(panel).find((node) => node.dataset.value === "soft");
+  soft.fire("click");
+  assert.equal(p.settings.profile, "soft");
+  assert(traverse(panel).includes(soft));
+  assert.equal(traverse(panel).filter((node) => node.tag === "select").length, 0);
+  const details = traverse(panel).find((node) => node.tag === "details");
+  assert.equal(details.open, false);
+  p.select("a", false);
+  assert.equal(
+    managedSection.children.find((node) => node.dataset.userId === "a"),
+    card,
+  );
+  assert.equal(
+    addSection.children.find((node) => node.dataset.userId === "a"),
+    availableRow,
+  );
+  assert.equal(availableRow.children[1].disabled, false);
+  assert.equal(p.panelRefreshers.size, 1);
+  p.stop();
+  assert.equal(p.panels.size, 0);
+  assert.equal(p.panelRefreshers.size, 0);
+});
+
+test("language follows Discord, can be overridden, and both dictionaries cover the same keys", (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  assert.equal(p.language(), "ru");
+  const panel = p.getSettingsPanel();
+  p.updatePreferences({ language: "en" });
+  assert.equal(p.t("waitingSpeech"), "Waiting for speech");
+  assert(panel.textContent.includes("Who to process"));
+  p.stop();
+  const next = f.create();
+  assert.equal(next.language(), "en");
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(ru).sort());
+  assert.equal(languageFor("auto", "de"), "en");
+  assert.equal(translate("en", "correction", 80), "Volume: 80% of baseline");
+});
