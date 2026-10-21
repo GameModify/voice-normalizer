@@ -18,16 +18,47 @@ function createSettingsPanel(plugin, doc) {
   const managedIds = new Set([...plugin.targets, ...plugin.preferences.excluded]);
   let language;
   let refreshView;
-  let advancedOpen = false;
+  const disclosures = new Map();
+  const openStates = new Map();
+  const remember = (key, node) => {
+    disclosures.set(key, node);
+    node.open = openStates.get(key) || false;
+  };
 
   const build = () => {
     language = plugin.language();
+    for (const [key, node] of disclosures) openStates.set(key, node.open);
+    disclosures.clear();
     root.replaceChildren();
     const section = (key) => {
       const node = element(doc, "section", "", "display:flex;flex-direction:column;gap:8px");
       node.append(element(doc, "h3", t(key), "margin:0;font-size:14px"));
       root.append(node);
       return node;
+    };
+    const disclosure = (key, label) => {
+      const node = element(
+        doc,
+        "details",
+        "",
+        "padding:12px;border:1px solid var(--background-modifier-accent);border-radius:8px",
+      );
+      node.dataset.section = key;
+      const summary = element(
+        doc,
+        "summary",
+        label,
+        "cursor:pointer;font-weight:600;font-size:14px",
+      );
+      const body = element(
+        doc,
+        "div",
+        "",
+        "display:flex;flex-direction:column;gap:8px;padding-top:12px",
+      );
+      node.append(summary, body);
+      remember(key, node);
+      return { root: node, summary, body };
     };
     root.append(element(doc, "h2", t("settingsTitle", version), "margin:0;font-size:18px"));
     root.append(
@@ -85,21 +116,24 @@ function createSettingsPanel(plugin, doc) {
     root.append(controls);
 
     // The enable list stays above the managed cards in every mode.
-    const available = section("addPeople");
+    const availableSection = disclosure("addPeople", t("addPeople"));
+    root.append(availableSection.root);
+    const available = availableSection.body;
     const availableEmpty = element(doc, "small", t("noPeople"));
     available.append(availableEmpty);
     const availableRows = new Map();
-    const managed = section("managedPeople");
+    const managedSection = disclosure("managedPeople", t("managedPeople"));
+    root.append(managedSection.root);
+    const managed = managedSection.body;
     const managedEmpty = element(doc, "small", t("noSelected"));
     managed.append(managedEmpty);
     const cards = new Map();
 
     const advanced = controls.advanced;
     root.append(advanced);
-    advanced.open = advancedOpen;
-    advanced.addEventListener("toggle", () => {
-      advancedOpen = advanced.open;
-    });
+    advanced.dataset.section = "advanced";
+    remember("advanced", advanced);
+    advanced.append(languageSection);
     const diagnostics = element(
       doc,
       "pre",
@@ -111,7 +145,7 @@ function createSettingsPanel(plugin, doc) {
     advanced.append(tests);
     advanced.append(element(doc, "strong", t("diagnostics")), diagnostics);
     const allOff = button(doc, t("stopAll"), () => plugin.turnOff());
-    root.append(allOff);
+    advanced.append(allOff);
 
     refreshView = () => {
       languageControl.update(plugin.preferences.language);
@@ -200,8 +234,17 @@ function createSettingsPanel(plugin, doc) {
           const actions = element(doc, "div", "", "display:flex;gap:6px;flex-wrap:wrap");
           const toggle = button(doc, "", () => plugin.select(id, !plugin.isSelected(id)));
           const reset = button(doc, t("reset"), () => plugin.resetLearning(id));
-          actions.append(reset, toggle);
-          node.append(name, status, detail, profile.element, actions);
+          const heading = element(
+            doc,
+            "div",
+            "",
+            "display:flex;gap:8px;align-items:center;justify-content:space-between",
+          );
+          heading.append(name, toggle);
+          const individual = disclosure(`user:${id}`, t("individualSettings"));
+          actions.append(reset);
+          individual.body.append(profile.element, actions);
+          node.append(heading, status, detail, individual.root);
           managed.append(node);
           card = { root: node, name, status, detail, profile, toggle, reset };
           cards.set(id, card);
@@ -216,8 +259,16 @@ function createSettingsPanel(plugin, doc) {
             : "";
         card.profile.update(plugin.profileFor(id));
         card.toggle.textContent = t(selected ? "disable" : "enable");
+        card.toggle.setAttribute("aria-pressed", String(selected));
         card.reset.disabled = !plugin.states.has(id);
       }
+      availableSection.summary.textContent = t("listCount", t("addPeople"), roster.length);
+      managedSection.summary.textContent = t(
+        "managedCount",
+        t("managedPeople"),
+        [...managedIds].filter((id) => plugin.isSelected(id)).length,
+        managedIds.size,
+      );
       diagnostics.textContent = [
         plugin.status,
         plugin.writerInfo,

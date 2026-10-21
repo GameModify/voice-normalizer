@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author -$erent*-
  * @authorLink https://github.com/GameModify
- * @version 1.3.0-beta.3
+ * @version 1.3.0-beta.4
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls (beta).
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -210,6 +210,9 @@ var require_i18n = __commonJS({
       auto: "Discord language",
       addPeople: "Channel participants",
       managedPeople: "Selected people",
+      individualSettings: "Individual settings",
+      listCount: "{0} \xB7 {1}",
+      managedCount: "{0} \xB7 {1} enabled / {2}",
       excludedPeople: "Excluded from everyone mode",
       noPeople: "Join a voice channel to see participants.",
       noSelected: "No people selected yet.",
@@ -288,6 +291,9 @@ var require_i18n = __commonJS({
       auto: "\u041A\u0430\u043A \u0432 Discord",
       addPeople: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043A\u0430\u043D\u0430\u043B\u0430",
       managedPeople: "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438",
+      individualSettings: "\u0418\u043D\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438",
+      listCount: "{0} \xB7 {1}",
+      managedCount: "{0} \xB7 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u043E {1} \u0438\u0437 {2}",
       excludedPeople: "\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0437 \u0440\u0435\u0436\u0438\u043C\u0430 \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
       noPeople: "\u0412\u043E\u0439\u0434\u0438\u0442\u0435 \u0432 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u0439 \u043A\u0430\u043D\u0430\u043B, \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u043E\u0432.",
       noSelected: "\u0423\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0438 \u043F\u043E\u043A\u0430 \u043D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u044B.",
@@ -341,7 +347,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0-beta.3",
+      version: "1.3.0-beta.4",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -520,15 +526,46 @@ var require_settings_panel = __commonJS({
       const managedIds = /* @__PURE__ */ new Set([...plugin.targets, ...plugin.preferences.excluded]);
       let language;
       let refreshView;
-      let advancedOpen = false;
+      const disclosures = /* @__PURE__ */ new Map();
+      const openStates = /* @__PURE__ */ new Map();
+      const remember = (key, node) => {
+        disclosures.set(key, node);
+        node.open = openStates.get(key) || false;
+      };
       const build = () => {
         language = plugin.language();
+        for (const [key, node] of disclosures) openStates.set(key, node.open);
+        disclosures.clear();
         root.replaceChildren();
         const section = (key) => {
           const node = element(doc, "section", "", "display:flex;flex-direction:column;gap:8px");
           node.append(element(doc, "h3", t(key), "margin:0;font-size:14px"));
           root.append(node);
           return node;
+        };
+        const disclosure = (key, label) => {
+          const node = element(
+            doc,
+            "details",
+            "",
+            "padding:12px;border:1px solid var(--background-modifier-accent);border-radius:8px"
+          );
+          node.dataset.section = key;
+          const summary = element(
+            doc,
+            "summary",
+            label,
+            "cursor:pointer;font-weight:600;font-size:14px"
+          );
+          const body = element(
+            doc,
+            "div",
+            "",
+            "display:flex;flex-direction:column;gap:8px;padding-top:12px"
+          );
+          node.append(summary, body);
+          remember(key, node);
+          return { root: node, summary, body };
         };
         root.append(element(doc, "h2", t("settingsTitle", version), "margin:0;font-size:18px"));
         root.append(
@@ -583,20 +620,23 @@ var require_settings_panel = __commonJS({
           t
         );
         root.append(controls);
-        const available = section("addPeople");
+        const availableSection = disclosure("addPeople", t("addPeople"));
+        root.append(availableSection.root);
+        const available = availableSection.body;
         const availableEmpty = element(doc, "small", t("noPeople"));
         available.append(availableEmpty);
         const availableRows = /* @__PURE__ */ new Map();
-        const managed = section("managedPeople");
+        const managedSection = disclosure("managedPeople", t("managedPeople"));
+        root.append(managedSection.root);
+        const managed = managedSection.body;
         const managedEmpty = element(doc, "small", t("noSelected"));
         managed.append(managedEmpty);
         const cards = /* @__PURE__ */ new Map();
         const advanced = controls.advanced;
         root.append(advanced);
-        advanced.open = advancedOpen;
-        advanced.addEventListener("toggle", () => {
-          advancedOpen = advanced.open;
-        });
+        advanced.dataset.section = "advanced";
+        remember("advanced", advanced);
+        advanced.append(languageSection);
         const diagnostics = element(
           doc,
           "pre",
@@ -608,7 +648,7 @@ var require_settings_panel = __commonJS({
         advanced.append(tests);
         advanced.append(element(doc, "strong", t("diagnostics")), diagnostics);
         const allOff = button(doc, t("stopAll"), () => plugin.turnOff());
-        root.append(allOff);
+        advanced.append(allOff);
         refreshView = () => {
           languageControl.update(plugin.preferences.language);
           scope.update(plugin.preferences.scope);
@@ -700,8 +740,17 @@ var require_settings_panel = __commonJS({
               const actions = element(doc, "div", "", "display:flex;gap:6px;flex-wrap:wrap");
               const toggle = button(doc, "", () => plugin.select(id, !plugin.isSelected(id)));
               const reset = button(doc, t("reset"), () => plugin.resetLearning(id));
-              actions.append(reset, toggle);
-              node.append(name, status, detail, profile.element, actions);
+              const heading = element(
+                doc,
+                "div",
+                "",
+                "display:flex;gap:8px;align-items:center;justify-content:space-between"
+              );
+              heading.append(name, toggle);
+              const individual = disclosure(`user:${id}`, t("individualSettings"));
+              actions.append(reset);
+              individual.body.append(profile.element, actions);
+              node.append(heading, status, detail, individual.root);
               managed.append(node);
               card = { root: node, name, status, detail, profile, toggle, reset };
               cards.set(id, card);
@@ -713,8 +762,16 @@ var require_settings_panel = __commonJS({
             card.detail.textContent = selected && plugin.states.has(id) ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0)) : "";
             card.profile.update(plugin.profileFor(id));
             card.toggle.textContent = t(selected ? "disable" : "enable");
+            card.toggle.setAttribute("aria-pressed", String(selected));
             card.reset.disabled = !plugin.states.has(id);
           }
+          availableSection.summary.textContent = t("listCount", t("addPeople"), roster.length);
+          managedSection.summary.textContent = t(
+            "managedCount",
+            t("managedPeople"),
+            [...managedIds].filter((id) => plugin.isSelected(id)).length,
+            managedIds.size
+          );
           diagnostics.textContent = [
             plugin.status,
             plugin.writerInfo,

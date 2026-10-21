@@ -182,12 +182,12 @@ test("profile and participant controls keep their DOM nodes during updates", (t)
   const p = f.create();
   p.select("a", true);
   const panel = p.getSettingsPanel();
-  const section = (label) => panel.children.find((node) => node.children[0]?.textContent === label);
-  const addSection = section(p.t("addPeople"));
-  const managedSection = section(p.t("managedPeople"));
+  const section = (key) => panel.children.find((node) => node.dataset.section === key);
+  const addSection = section("addPeople");
+  const managedSection = section("managedPeople");
   assert(panel.children.indexOf(addSection) < panel.children.indexOf(managedSection));
-  const availableRow = addSection.children.find((node) => node.dataset.userId === "a");
-  const card = managedSection.children.find((node) => node.dataset.userId === "a");
+  const availableRow = addSection.children[1].children.find((node) => node.dataset.userId === "a");
+  const card = managedSection.children[1].children.find((node) => node.dataset.userId === "a");
   const soft = traverse(panel).find((node) => node.dataset.value === "soft");
   soft.fire("click");
   assert.equal(p.settings.profile, "soft");
@@ -197,11 +197,11 @@ test("profile and participant controls keep their DOM nodes during updates", (t)
   assert.equal(details.open, false);
   p.select("a", false);
   assert.equal(
-    managedSection.children.find((node) => node.dataset.userId === "a"),
+    managedSection.children[1].children.find((node) => node.dataset.userId === "a"),
     card,
   );
   assert.equal(
-    addSection.children.find((node) => node.dataset.userId === "a"),
+    addSection.children[1].children.find((node) => node.dataset.userId === "a"),
     availableRow,
   );
   assert.equal(availableRow.children[1].disabled, false);
@@ -247,8 +247,8 @@ test("the top participant button toggles both ways in selected and everyone scop
   const f = fixture(t);
   const p = f.create();
   const panel = p.getSettingsPanel();
-  const section = panel.children.find((node) => node.children[0]?.textContent === p.t("addPeople"));
-  const row = section.children.find((node) => node.dataset.userId === "a");
+  const section = panel.children.find((node) => node.dataset.section === "addPeople");
+  const row = section.children[1].children.find((node) => node.dataset.userId === "a");
   const toggle = row.children[1];
   assert.equal(toggle.disabled, false);
   toggle.fire("click");
@@ -268,7 +268,32 @@ test("the top participant button toggles both ways in selected and everyone scop
   assert.equal(p.isSelected("a"), true);
   assert.equal(p.preferences.excluded.includes("a"), false);
   assert.equal(
-    section.children.find((node) => node.dataset.userId === "a"),
+    section.children[1].children.find((node) => node.dataset.userId === "a"),
     row,
   );
+});
+
+test("disclosures retain expansion through refresh and language changes", (t) => {
+  const f = fixture(t);
+  const p = f.create();
+  p.select("a", true);
+  const panel = p.getSettingsPanel();
+  const find = (key) => traverse(panel).find((node) => node.dataset.section === key);
+  for (const key of ["addPeople", "managedPeople", "user:a", "advanced"]) {
+    assert.equal(find(key).tag, "details");
+    assert.equal(find(key).open, false);
+  }
+  const available = find("addPeople");
+  available.open = true;
+  find("user:a").open = true;
+  p.updatePreferences({ scope: "all" });
+  assert.equal(find("addPeople"), available);
+  assert.equal(available.open, true);
+  assert.equal(find("managedPeople").open, false);
+  assert(find("managedPeople").children[0].textContent.includes("2"));
+  p.updatePreferences({ language: "en" });
+  assert.equal(find("addPeople").open, true);
+  assert.equal(find("user:a").open, true);
+  assert.equal(find("managedPeople").open, false);
+  assert(traverse(find("advanced")).some((node) => node.textContent === "Language"));
 });
