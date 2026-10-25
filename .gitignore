@@ -6,6 +6,7 @@ node_modules/
 .DS_Store
 Thumbs.db
 coverage/
+dist/
 *.tmp
 snapshots/
 *.backup-*.plugin.js
