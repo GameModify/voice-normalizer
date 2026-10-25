@@ -8,7 +8,10 @@ const metadata = `/**
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
+ * @source https://github.com/GameModify/voice-normalizer
+ * @website https://github.com/GameModify/voice-normalizer/releases/latest
  * @version ${version}
+ * @license MIT
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls.
  */`;
 const output = path.join(root, "VoiceNormalizer.plugin.js");
@@ -23,7 +26,8 @@ const result = buildSync({
   legalComments: "none",
   logLevel: "warning",
 });
-const built = metadata + "\n" + result.outputFiles[0].text;
+const license = fs.readFileSync(path.join(root, "LICENSE"), "utf8").replace(/\r\n?/g, "\n").trim();
+const built = metadata + "\n/*\n" + license + "\n*/\n" + result.outputFiles[0].text;
 if (process.argv.includes("--check")) {
   const existing = fs.existsSync(output) ? fs.readFileSync(output, "utf8") : "";
   if (existing !== built) {

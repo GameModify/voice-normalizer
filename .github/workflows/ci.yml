@@ -18,3 +18,5 @@ jobs:
         run: npm run check
       - name: Run regression tests
         run: npm test
+      - name: Verify distributable plugin and stage release files
+        run: npm run package:release

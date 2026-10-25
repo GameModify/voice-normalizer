@@ -2,9 +2,35 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.4.0-beta.2
+ * @source https://github.com/GameModify/voice-normalizer
+ * @website https://github.com/GameModify/voice-normalizer/releases/latest
+ * @version 1.4.0
+ * @license MIT
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls.
  */
+/*
+MIT License
+
+Copyright (c) 2026 GameModify
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
   try {
@@ -489,14 +515,15 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.4.0-beta.2",
+      version: "1.4.0",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
         build: "node scripts/build.cjs",
         check: "node scripts/build.cjs --check && eslint src scripts && prettier --check src scripts tests eslint.config.js package.json",
         format: "prettier --write src scripts tests eslint.config.js package.json",
-        test: "node --test tests/*.test.cjs"
+        test: "node --test tests/*.test.cjs",
+        "package:release": "node scripts/package-release.cjs"
       },
       devDependencies: {
         "@eslint/js": "^10.0.1",
