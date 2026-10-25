@@ -5,7 +5,6 @@ const { translate } = require("../i18n");
 const { element, choices } = require("./dom");
 
 const FIELDS = [
-  ["targetLevel", 0.04, 0.25, 0.005],
   ["maxGain", 1, 2, 0.05],
   ["minGain", 0.25, 1, 0.05],
   ["attack", 0.2, 0.9, 0.05],
@@ -72,12 +71,8 @@ function createSettingsControls(
     for (const { key, slider, output } of sliders) {
       if (doc.activeElement !== slider) slider.value = String(current[key]);
       const value = current[key];
-      const suffix = ["attack", "release"].includes(key)
-        ? t("perPoll")
-        : key === "targetLevel"
-          ? "RTP"
-          : t("baseline");
-      output.textContent = `${t(key)}: ${(value * 100).toFixed(key === "targetLevel" ? 1 : 0)}% ${suffix}`;
+      const suffix = ["attack", "release"].includes(key) ? t("perPoll") : t("baseline");
+      output.textContent = `${t(key)}: ${(value * 100).toFixed(0)}% ${suffix}`;
     }
   }
   section.refresh = refresh;

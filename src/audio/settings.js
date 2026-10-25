@@ -4,7 +4,6 @@
 const PRESETS = Object.freeze({
   soft: Object.freeze({
     profile: "soft",
-    targetLevel: 0.095,
     maxGain: 1.3,
     minGain: 0.65,
     attack: 0.4,
@@ -12,7 +11,6 @@ const PRESETS = Object.freeze({
   }),
   balanced: Object.freeze({
     profile: "balanced",
-    targetLevel: 0.095,
     maxGain: 2,
     minGain: 0.45,
     attack: 0.65,
@@ -20,7 +18,6 @@ const PRESETS = Object.freeze({
   }),
   aggressive: Object.freeze({
     profile: "aggressive",
-    targetLevel: 0.105,
     maxGain: 2,
     minGain: 0.35,
     attack: 0.85,
@@ -30,7 +27,6 @@ const PRESETS = Object.freeze({
 
 const DEFAULT_SETTINGS = PRESETS.balanced;
 const BOUNDS = Object.freeze({
-  targetLevel: [0.04, 0.25],
   maxGain: [1, 2],
   minGain: [0.25, 1],
   attack: [0.2, 0.9],

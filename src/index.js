@@ -1,4 +1,5 @@
 const { createUserState, calculateGain, interruptSpeech } = require("./audio/leveler");
+const { VolumeOutput } = require("./discord/volume-output");
 const { smoothVolume } = require("./audio/gain-envelope");
 const { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require("./audio/settings");
 const { normalizePreferences } = require("./preferences");
@@ -10,6 +11,9 @@ module.exports = class VoiceNormalizer {
   constructor() {
     this.targets = new Set();
     this.states = new Map();
+    this.references = new Map();
+    this.output = null;
+    this.runtimePhase = null;
     this.enabled = false;
     this.started = false;
     this.timer = null;
@@ -31,9 +35,6 @@ module.exports = class VoiceNormalizer {
       latest: "—",
     };
     this.testRunning = false;
-    this.testBaseline = null;
-    // Discord builds can expose percent-like or amplitude-like internal volumes.
-    this.maxInternalVolume = 200;
     this.settings = { ...DEFAULT_SETTINGS };
     this.preferences = normalizePreferences();
     this.panelRefreshers = new Set();
@@ -135,19 +136,21 @@ module.exports = class VoiceNormalizer {
   }
   resetLearning(id) {
     this.restore(String(id));
+    this.references.delete(String(id));
     this.toast(this.t("resetDone"));
     this.refreshPanels();
   }
   userStatus(id, participants = null) {
     if (!this.started || !this.isSelected(id)) return "off";
     if (!this.connection) return "waitingChannel";
+    if (!this.writer) return "writerWaiting";
     const roster = participants ?? this.participants();
     if (!roster.some((person) => person.id === String(id))) return "waitingUser";
     if (this.read(id) === 0) return "muted";
     const state = this.states.get(String(id));
     if (!state || performance.now() - (state.sampleAt ?? 0) > 1500) return "unavailable";
     if (!state.talking) return "waitingSpeech";
-    return state.voiceCount < 7 ? "learning" : "active";
+    return state.reference === null ? "learning" : "active";
   }
   loadTargets() {
     try {
@@ -170,7 +173,31 @@ module.exports = class VoiceNormalizer {
   }
   resetConnection(conn = null) {
     for (const id of [...this.states.keys()]) this.restore(id);
+    this.output?.dispose();
+    this.output = null;
+    this.writer = null;
     this.connection = conn;
+    if (!conn) return;
+    this.output = new VolumeOutput(conn, BdApi.Patcher);
+    if (this.output.supported) {
+      this.writer = (id, gain) => this.output.apply(id, gain);
+      this.writerInfo = "Connection playback volume (user slider unchanged)";
+      this.reportRuntime("ready");
+    } else {
+      this.writerInfo = "Independent connection volume is unavailable";
+      this.reportRuntime("unavailable");
+    }
+  }
+  reportRuntime(phase) {
+    if (this.runtimePhase === phase) return;
+    this.runtimePhase = phase;
+    try {
+      BdApi.Data?.save?.("VoiceNormalizer", "runtime", {
+        version: require("../package.json").version,
+        output: "connection",
+        phase,
+      });
+    } catch (_) {}
   }
   suspend() {
     this.enabled = false;
@@ -216,29 +243,14 @@ module.exports = class VoiceNormalizer {
   read(id) {
     try {
       const value = this.store()?.getLocalVolume?.(String(id));
-      return Number.isFinite(value) && value >= 0 && value < 1000 ? value : null;
+      return Number.isFinite(value) && value >= 0 ? value : null;
     } catch (_) {
       return null;
     }
   }
   resolveWriter() {
-    this.writer = null;
-    try {
-      const mod = BdApi.Webpack.getModule(
-        (m) =>
-          m &&
-          typeof m.setLocalVolume === "function" &&
-          typeof m.getLocalVolume !== "function" &&
-          typeof m.getStats !== "function",
-      );
-      if (mod) {
-        this.writer = (id, value) => mod.setLocalVolume(String(id), value, "default");
-        this.writerInfo = "MediaEngineActions.setLocalVolume (default)";
-        return true;
-      }
-    } catch (_) {}
-    this.writerInfo = "setLocalVolume not found";
-    return false;
+    if (!this.writer) this.resetConnection(this.connection || this.connect());
+    return Boolean(this.writer);
   }
   connect() {
     try {
@@ -295,49 +307,32 @@ module.exports = class VoiceNormalizer {
       BdApi.UI.showToast(msg, { type });
     } catch (_) {}
   }
-  write(id, value) {
-    id = String(id);
-    // Never increase the general limit, but allow restoring an observed baseline
-    // established by Discord/BetterVolume above that limit.
-    const limit = Math.max(
-      this.maxInternalVolume,
-      this.states.get(id)?.base || 0,
-      this.testBaseline?.id === id ? this.testBaseline.base : 0,
-    );
-    if (!this.writer || !Number.isFinite(value) || value < 0 || value > limit) {
-      this.lastWriteError = "Value " + String(value) + " outside allowed range 0–" + limit;
-      return false;
-    }
+  write(id, gain) {
+    if (!this.writer || !Number.isFinite(gain) || gain < 0 || gain > 2) return false;
     try {
-      this.writer(String(id), value);
+      if (!this.writer(String(id), gain)) return false;
       this.diagnostic.writes++;
-      this.lastWriteError = "None";
+      this.lastWriteError = this.t("none");
+      this.reportRuntime("applied");
       return true;
-    } catch (e) {
-      this.lastWriteError = String(e?.message || e);
+    } catch (error) {
+      this.lastWriteError = String(error?.message || error);
+      this.reportRuntime("error");
       this.status = this.t("volumeError", this.lastWriteError);
       return false;
     }
   }
-  ceilingFor(base) {
-    return base > 4 ? Math.max(200, base) : Math.min(4, base * 2);
-  }
-  volumeTolerance(reference, relative, baseline, absolute) {
-    return Math.max(Math.min(absolute, baseline * 0.01), reference * relative);
-  }
   restore(id) {
-    const st = this.states.get(id);
-    if (!st) return;
-    const now = this.read(id);
-    if (
-      st.lastWrite !== null &&
-      Number.isFinite(now) &&
-      now > 0 &&
-      Math.abs(now - st.lastWrite) <= this.volumeTolerance(st.lastWrite, 0.035, st.base, 0.03)
-    ) {
-      this.write(id, st.base);
+    const state = this.states.get(String(id));
+    if (state?.reference > 0) {
+      this.references.delete(String(id));
+      this.references.set(String(id), state.reference);
+      if (this.references.size > 256) this.references.delete(this.references.keys().next().value);
     }
-    this.states.delete(id);
+    try {
+      this.output?.restore(String(id), this.read(id) === 0);
+    } catch (_) {}
+    this.states.delete(String(id));
   }
   turnOff() {
     this.suspend();
@@ -495,71 +490,43 @@ module.exports = class VoiceNormalizer {
           continue;
         }
         const level = input.level;
-        const now = this.read(id);
-        if (!Number.isFinite(now) || now <= 0) {
-          // Keep muted users muted and recalibrate if their slider is raised later.
-          this.states.delete(id);
-          this.status = this.t(now === 0 ? "muted" : "unavailable");
+        const base = this.read(id);
+        if (!Number.isFinite(base) || base <= 0) {
+          if (base === 0) this.restore(id);
+          this.status = this.t(base === 0 ? "muted" : "unavailable");
           continue;
         }
         let st = this.states.get(id);
-        if (!st || (st.lastWrite === null && st.base !== now)) {
-          st = createUserState(now);
+        if (!st) {
+          st = createUserState(base, this.references.get(id) ?? null);
           this.states.set(id, st);
         }
+        // Preference changes do not change the incoming voice measurement.
+        st.base = base;
         st.lastLevel = level;
         st.sampleAt = performance.now();
-        if (st.lastWrite !== null) {
-          const diff = Math.abs(now - st.lastWrite);
-          if (diff > this.volumeTolerance(st.lastWrite, 0.04, st.base, 0.04)) {
-            if (performance.now() - st.lastWriteTime < 700) {
-              st.writeUnconfirmed++;
-              continue;
-            }
-            // An external slider change establishes a new baseline.
-            st = createUserState(now);
-            st.lastLevel = level;
-            st.sampleAt = performance.now();
-            this.states.set(id, st);
-            this.status = this.t("manualBase");
-            continue;
-          }
-          st.writeUnconfirmed = 0;
-          this.diagnostic.confirmed++;
-        }
+        if (!this.output.prepare(id)) continue;
         const settings = this.settingsFor(id);
-        const timestamp = performance.now();
-        const gain = calculateGain(st, level, input.detected, timestamp, settings);
-        const ceiling = Math.min(
-          this.ceilingFor(st.base),
-          settings.mode === "attenuate" ? st.base : Infinity,
-        );
-        const floor = Math.min(0.02, st.base * settings.minGain);
-        const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
+        const gain = calculateGain(st, level, input.detected, st.sampleAt, settings);
+        const desired = settings.mode === "attenuate" ? Math.min(1, gain) : gain;
         const next = Math.max(
-          floor,
-          Math.min(ceiling, smoothVolume(st, now, desired, timestamp, settings)),
+          settings.minGain,
+          Math.min(settings.maxGain, smoothVolume(st, st.lastGain, desired, st.sampleAt, settings)),
         );
-        st.lastGain = next / st.base;
+        const correction = settings.mode === "attenuate" ? Math.min(1, next) : next;
         this.diagnostic.latest =
           "audio=" +
-          level.toFixed(3) +
-          ", average=" +
-          (st.ema ?? 0).toFixed(3) +
-          ", gain=" +
-          st.lastGain.toFixed(2) +
-          "x, store=" +
-          now.toFixed(3) +
-          "→" +
-          next.toFixed(3);
+          level.toFixed(4) +
+          ", reference=" +
+          (st.reference ?? 0).toFixed(4) +
+          ", correction=" +
+          correction.toFixed(2) +
+          "x";
         this.status = this.t(
-          !st.talking ? "waitingSpeech" : st.voiceCount < 7 ? "learning" : "active",
+          st.reference === null ? "learning" : !st.talking ? "waitingSpeech" : "active",
         );
-        if (Math.abs(next - now) > Math.min(0.008, st.base * 0.005)) {
-          if (this.write(id, next)) {
-            st.lastWrite = next;
-            st.lastWriteTime = performance.now();
-          }
+        if (Math.abs(correction - st.lastGain) > 0.001) {
+          if (this.write(id, correction)) st.lastGain = correction;
         }
       }
     } catch (e) {
@@ -571,50 +538,55 @@ module.exports = class VoiceNormalizer {
     }
   }
   async halfVolumeTest(id) {
+    if (!this.started) return;
     if (this.enabled || this.testRunning) {
       this.toast(this.t("testBusy"), "warning");
       return;
     }
-    if (!this.writer && !this.resolveWriter()) {
+    if (!this.resolveWriter()) {
       this.toast(this.t("noWriter"), "warning");
       return;
     }
     id = String(id);
-    const before = this.read(id);
-    if (!Number.isFinite(before) || before <= 0) {
+    if (!(this.read(id) > 0)) {
       this.toast(this.t("noVolume"), "warning");
       return;
     }
+    const output = this.output;
+    if (!output.prepare(id)) return;
     this.testRunning = true;
-    this.testBaseline = { id, base: before };
-    const target = before * 0.5;
-    const tolerance = this.volumeTolerance(target, 0.08, before, 0.035);
+    const generation = this.generation;
+    let confirmed = false;
     try {
-      if (!this.write(id, target)) throw new Error(this.lastWriteError);
+      if (!this.write(id, 0.5)) throw Error(this.lastWriteError);
       this.status = this.t("testStarted");
       await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 3000);
-        this.cancelTest = () => {
+        const done = () => {
           clearTimeout(timer);
-          const now = this.read(id);
-          if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
-            this.write(id, before);
+          try {
+            const entry = output.entries.get(id);
+            const actual = output.connection.getLocalVolume(id);
+            confirmed = Boolean(
+              entry &&
+              Math.abs(actual - entry.applied) <= Math.max(0.00001, Math.abs(entry.applied) * 0.03),
+            );
+            output.restore(id, this.read(id) === 0);
+          } catch (_) {}
           resolve();
         };
+        const timer = setTimeout(done, 3000);
+        this.cancelTest = done;
       });
-      const after = this.read(id);
-      const ok = Number.isFinite(after) && after > 0 && Math.abs(after - target) < tolerance;
-      this.status = this.t("testResult", this.t(ok ? "confirmed" : "unconfirmed"));
-    } catch (e) {
-      this.status = this.t("error", String(e?.message || e));
+      if (this.started && generation === this.generation)
+        this.status = this.t("testResult", this.t(confirmed ? "confirmed" : "unconfirmed"));
+    } catch (error) {
+      if (this.started && generation === this.generation)
+        this.status = this.t("error", String(error?.message || error));
     } finally {
       try {
-        const now = this.read(id);
-        if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
-          this.write(id, before);
+        output.restore(id, this.read(id) === 0);
       } catch (_) {}
       this.testRunning = false;
-      this.testBaseline = null;
       this.cancelTest = null;
     }
   }
@@ -654,26 +626,20 @@ module.exports = class VoiceNormalizer {
     } catch (_) {}
   }
   getLiveSnapshot(id) {
-    const st = this.states.get(String(id));
+    const state = this.states.get(String(id));
     const active = this.isSelected(id);
-    const actual = this.read(id);
-    const base = st?.base;
-    const relative =
-      Number.isFinite(actual) && Number.isFinite(base) && base > 0 ? actual / base : 1;
-    const ratio = Math.max(0, Math.min(2, relative));
-    const gainDb = ratio > 0 ? 20 * Math.log10(ratio) : -60;
-    const level = Number.isFinite(st?.lastLevel) ? st.lastLevel : 0;
-    const average = Number.isFinite(st?.ema) ? st.ema : 0;
+    const base = this.read(id);
+    const ratio = state?.lastGain ?? 1;
     return {
       active,
       ratio,
-      gainDb,
-      level,
-      average,
-      hasAudio: Boolean(st && st.voiceCount > 0),
-      volumeKnown: Number.isFinite(actual),
-      current: actual,
+      level: state?.lastLevel ?? 0,
+      average: state?.ema ?? 0,
+      hasAudio: Boolean(state?.voiceCount),
+      volumeKnown: Number.isFinite(base),
+      current: base,
       base,
+      reference: state?.reference ?? null,
     };
   }
   menuMeterComponent() {
@@ -707,7 +673,7 @@ module.exports = class VoiceNormalizer {
           ? R.createElement(
               "div",
               { style: { marginTop: 5, color: "var(--text-muted)" } },
-              this.t("correction", (data.ratio * 100).toFixed(0)),
+              this.t("correction", data.ratio.toFixed(2)),
             )
           : null,
       );

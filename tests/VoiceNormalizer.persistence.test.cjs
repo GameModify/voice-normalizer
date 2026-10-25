@@ -1,79 +1,9 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const Plugin = require("../VoiceNormalizer.plugin.js");
 
-const { mockClock } = require("./clock.cjs");
-
+const { fixture: coreFixture } = require("./plugin-fixture.cjs");
 function fixture(t, saved = ["friend"]) {
-  const advanceClock = mockClock(t);
-  let connection;
-  let participants = ["friend"];
-  const volume = new Map([["friend", 100]]);
-  const data = { targets: saved };
-  const writes = [];
-  const actions = {
-    setLocalVolume(id, value) {
-      writes.push([id, value]);
-      volume.set(id, value);
-    },
-  };
-  const provider = {
-    getMediaEngine: () => ({ eachConnection: (cb) => connection && cb(connection) }),
-  };
-  const stores = {
-    MediaEngineStore: { getLocalVolume: (id) => volume.get(id) ?? 100 },
-    VoiceStateStore: {
-      getCurrentClientVoiceChannelId: () => "room",
-      getVoiceStatesForChannel: () => participants.map((userId) => ({ userId })),
-    },
-    UserStore: { getCurrentUser: () => ({ id: "self" }) },
-  };
-  global.BdApi = {
-    Data: {
-      load: (_, key) => structuredClone(data[key]),
-      save: (_, key, value) => {
-        data[key] = structuredClone(value);
-      },
-    },
-    Webpack: {
-      getStore: (name) => stores[name],
-      getModule: (predicate) => [actions, provider].find(predicate),
-    },
-    ContextMenu: { patch: () => () => {} },
-    UI: { showToast() {} },
-  };
-  const plugins = [];
-  const create = () => {
-    const p = new Plugin();
-    plugins.push(p);
-    p.start();
-    return p;
-  };
-  t.after(() => plugins.forEach((p) => p.stop()));
-  return {
-    data,
-    volume,
-    writes,
-    create,
-    setParticipants: (list) => {
-      participants = list;
-    },
-    connect() {
-      connection = {
-        getUserIdBySsrc: () => "friend",
-        getStats: () => {
-          advanceClock();
-          return {
-            rtp: { inbound: { audio: [{ ssrc: 123, audioLevel: 0.4, audioDetected: 1 }] } },
-          };
-        },
-      };
-      return connection;
-    },
-    disconnect: () => {
-      connection = null;
-    },
-  };
+  return coreFixture(t, { targets: saved, connected: false });
 }
 
 test("saved user IDs survive a new plugin instance and startup outside a call", async (t) => {
@@ -143,11 +73,11 @@ test("muted users stay muted and unmuting starts with a fresh baseline", async (
   f.connect();
   const p = f.create();
   await p.tick(p.generation);
-  f.volume.set("friend", 0);
+  f.setVolume("friend", 0);
   await p.tick(p.generation);
   assert.equal(f.volume.get("friend"), 0);
   assert.equal(p.states.size, 0);
-  f.volume.set("friend", 80);
+  f.setVolume("friend", 80);
   await p.tick(p.generation);
   assert.equal(p.states.get("friend").base, 80);
   p.stop();
@@ -193,6 +123,7 @@ test("invalid stored targets are ignored and save failures are visible", (t) => 
 
 test("stop cancels the manual volume test and restores volume immediately", async (t) => {
   const f = fixture(t, []);
+  f.connect();
   const p = f.create();
   const pending = p.halfVolumeTest("friend");
   assert.equal(f.volume.get("friend"), 50);
@@ -206,7 +137,6 @@ test("existing 1.2 profiles and custom settings survive loading and saving", (t)
   const f = fixture(t, []);
   f.data.settings = {
     profile: "custom",
-    targetLevel: 0.12,
     minGain: 0.5,
     maxGain: 1.7,
     attack: 0.7,
@@ -216,7 +146,7 @@ test("existing 1.2 profiles and custom settings survive loading and saving", (t)
   assert.deepEqual(p.settings, f.data.settings);
   p.updateSettings({ ...p.settings, maxGain: 99 });
   assert.equal(f.data.settings.maxGain, 2);
-  assert.equal(f.data.settings.targetLevel, 0.12);
+  assert.equal(f.data.settings.profile, "custom");
 });
 
 test("a stalled statistics request times out and does not block later connections", async (t) => {
@@ -262,28 +192,28 @@ test("cancelled statistics cannot clear the slot owned by a restarted session", 
   assert(f.volume.get("friend") < 100);
 });
 
-test("observed volumes above 200 can be attenuated and restored without raising the general cap", async (t) => {
+test("high user baselines can be attenuated and restored without changing the slider", async (t) => {
   const f = fixture(t);
-  f.volume.set("friend", 500);
+  f.setVolume("friend", 500);
   f.connect();
   const p = f.create();
-  assert.equal(p.write("friend", 500), false);
-  await p.tick(p.generation);
+  await f.tick(p, 4);
   assert(f.volume.get("friend") < 500);
-  assert.equal(p.write("friend", 501), false);
+  assert.equal(f.preferences.get("friend"), 500);
+  assert.equal(p.write("friend", 3), false);
   p.stop();
   assert.equal(f.volume.get("friend"), 500);
 });
 
 test("very small volumes still normalize and a manual change establishes a new baseline", async (t) => {
   const f = fixture(t);
-  f.volume.set("friend", 0.01);
+  f.setVolume("friend", 0.01);
   f.connect();
   const p = f.create();
   await p.tick(p.generation);
   assert(f.volume.get("friend") < 0.01);
-  p.states.get("friend").lastWriteTime = -1000;
-  f.volume.set("friend", 0.003);
+
+  f.setVolume("friend", 0.003);
   await p.tick(p.generation);
   assert.equal(p.states.get("friend").base, 0.003);
   p.stop();
@@ -292,7 +222,8 @@ test("very small volumes still normalize and a manual change establishes a new b
 
 test("manual volume diagnostics restore high baselines and respect a new zero setting", async (t) => {
   const f = fixture(t, []);
-  f.volume.set("friend", 500);
+  f.connect();
+  f.setVolume("friend", 500);
   const p = f.create();
   const high = p.halfVolumeTest("friend");
   assert.equal(f.volume.get("friend"), 250);
@@ -300,10 +231,10 @@ test("manual volume diagnostics restore high baselines and respect a new zero se
   await high;
   assert.equal(f.volume.get("friend"), 500);
   p.start();
-  f.volume.set("friend", 0.01);
+  f.setVolume("friend", 0.01);
   const quiet = p.halfVolumeTest("friend");
   assert.equal(f.volume.get("friend"), 0.005);
-  f.volume.set("friend", 0);
+  f.setVolume("friend", 0);
   p.stop();
   await quiet;
   assert.equal(f.volume.get("friend"), 0);

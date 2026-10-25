@@ -3,28 +3,24 @@
 const { detectSpeech } = require("./speech-activity");
 const { DEFAULT_SETTINGS } = require("./settings");
 
-function createUserState(base) {
+function createUserState(base, reference = null) {
   return {
     base,
-    lastWrite: null,
-    lastWriteTime: 0,
+    reference,
+    calibration: [],
     ema: null,
     voiceCount: 0,
-    writeUnconfirmed: 0,
-    lastLevel: 0,
     lastGain: 1,
     stableGain: 1,
+    lastLevel: 0,
     activityPolls: 0,
-    lastSpeechSampleAt: null,
     talking: false,
+    lastSpeechSampleAt: null,
+    lastObservationAt: null,
     envelopeAt: null,
     recoveryHoldMs: 0,
-    lastObservationAt: null,
   };
 }
-
-// Missing statistics are not evidence of continuous speech. Preserve the
-// learned level and current attenuation, but require a fresh speech sequence.
 function interruptSpeech(state) {
   state.activityPolls = 0;
   state.talking = false;
@@ -32,44 +28,47 @@ function interruptSpeech(state) {
   state.lastObservationAt = null;
   state.envelopeAt = null;
 }
-
-/**
- * RTP statistics are not samples and cannot provide a true peak limiter.
- * Isolated events may trigger ducking, but never affect the learned average.
- */
 function calculateGain(state, level, detected, timestamp, settings = DEFAULT_SETTINGS) {
-  if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500) {
+  if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500)
     interruptSpeech(state);
-  }
   state.lastObservationAt = timestamp;
   const { active, confirmed } = detectSpeech(state, level, detected);
   if (confirmed) {
     const elapsed =
       state.lastSpeechSampleAt === null
         ? 100
-        : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
-    // Brief quiet syllables should not immediately erase a recent loud phrase.
-    const window = state.ema !== null && level < state.ema ? 6000 : 3000;
-    const alpha = 1 - Math.exp(-elapsed / window);
+        : Math.max(0, Math.min(250, timestamp - state.lastSpeechSampleAt));
+    const alpha = 1 - Math.exp(-elapsed / 450);
     state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
     state.lastSpeechSampleAt = timestamp;
     state.voiceCount++;
+    if (state.reference === null) {
+      state.calibration.push(level);
+      if (state.calibration.length >= 15) {
+        const sorted = [...state.calibration].sort((a, b) => a - b);
+        state.reference = sorted[Math.floor(sorted.length / 2)];
+        state.calibration = [];
+      }
+    }
   }
-
+  if (state.reference === null) return 1;
   let gain = state.stableGain;
-  if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
-    gain = settings.targetLevel / Math.max(state.ema, 0.006);
-  } else if (confirmed && level > 0.18) {
-    gain = Math.min(1, 0.18 / level);
+  if (confirmed && state.ema > 0) {
+    const difference = Math.log(state.reference / state.ema);
+    const deadband = Math.log(1.12);
+    const strength =
+      settings.profile === "soft" ? 0.6 : settings.profile === "aggressive" ? 0.95 : 0.8;
+    gain = Math.exp(
+      Math.sign(difference) * Math.max(0, Math.abs(difference) - deadband) * strength,
+    );
+    gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
+    if (settings.mode === "attenuate") gain = Math.min(1, gain);
+    state.stableGain = gain;
   }
-
+  if (active && level > state.reference * 1.8)
+    gain = Math.min(gain, (state.reference * 1.8) / level);
   gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
-  if (settings.mode === "attenuate") gain = Math.min(1, gain);
-  if (confirmed) state.stableGain = gain;
-  // Keep the peak guard separate from the learned speech target. Otherwise a
-  // single peak can become the target again at the start of the next phrase.
-  if (active && level > 0.18) gain = Math.max(settings.minGain, Math.min(gain, 0.18 / level));
-  return gain;
+  return settings.mode === "attenuate" ? Math.min(1, gain) : gain;
 }
 
 module.exports = { createUserState, calculateGain, interruptSpeech };
