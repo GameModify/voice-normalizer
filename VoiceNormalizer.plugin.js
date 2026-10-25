@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.4.0-beta.1
+ * @version 1.4.0-beta.2
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls.
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -165,11 +165,12 @@ var require_volume_output = __commonJS({
     "use strict";
     var validVolume = (value) => Number.isFinite(value) && value >= 0;
     var VolumeOutput2 = class {
-      constructor(connection, patcher) {
+      constructor(connection, patcher, readPreference) {
         this.connection = connection;
+        this.readPreference = readPreference;
         this.entries = /* @__PURE__ */ new Map();
         this.ownWrite = false;
-        this.supported = typeof connection?.getLocalVolume === "function" && typeof connection?.setLocalVolume === "function" && typeof patcher?.before === "function";
+        this.supported = typeof connection?.getLocalVolume === "function" && typeof connection?.setLocalVolume === "function" && typeof readPreference === "function" && typeof patcher?.before === "function";
         if (!this.supported) return;
         try {
           this.unpatch = patcher.before("VoiceNormalizer", connection, "setLocalVolume", (_, args) => {
@@ -191,12 +192,18 @@ var require_volume_output = __commonJS({
         if (!entry) {
           let base;
           try {
-            base = this.connection.getLocalVolume(id);
+            base = this.readPreference(id);
           } catch (_) {
             return null;
           }
-          if (!validVolume(base)) return null;
+          if (!validVolume(base) || base === 0) return null;
           entry = { base, gain: 1, applied: base };
+          this.ownWrite = true;
+          try {
+            this.connection.setLocalVolume(id, base);
+          } finally {
+            this.ownWrite = false;
+          }
           this.entries.set(id, entry);
         }
         return entry;
@@ -482,7 +489,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.4.0-beta.1",
+      version: "1.4.0-beta.2",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -1149,7 +1156,7 @@ module.exports = class VoiceNormalizer {
     this.writer = null;
     this.connection = conn;
     if (!conn) return;
-    this.output = new VolumeOutput(conn, BdApi.Patcher);
+    this.output = new VolumeOutput(conn, BdApi.Patcher, (id) => this.read(id));
     if (this.output.supported) {
       this.writer = (id, gain) => this.output.apply(id, gain);
       this.writerInfo = "Connection playback volume (user slider unchanged)";
@@ -1489,20 +1496,22 @@ module.exports = class VoiceNormalizer {
     }
     const output = this.output;
     if (!output.prepare(id)) return;
+    let originalReadback;
     this.testRunning = true;
     const generation = this.generation;
     let confirmed = false;
     try {
+      originalReadback = output.connection.getLocalVolume(id);
       if (!this.write(id, 0.5)) throw Error(this.lastWriteError);
       this.status = this.t("testStarted");
       await new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);
           try {
-            const entry = output.entries.get(id);
             const actual = output.connection.getLocalVolume(id);
+            const expected = originalReadback * 0.5;
             confirmed = Boolean(
-              entry && Math.abs(actual - entry.applied) <= Math.max(1e-5, Math.abs(entry.applied) * 0.03)
+              output.entries.has(id) && Number.isFinite(expected) && expected > 0 && Math.abs(actual - expected) <= Math.max(1e-5, Math.abs(expected) * 0.03)
             );
             output.restore(id, this.read(id) === 0);
           } catch (_) {

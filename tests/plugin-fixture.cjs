@@ -21,8 +21,8 @@ function fixture(t, options = {}) {
   const advance = mockClock(t);
   const saved = { targets: options.targets ?? ["friend"], ...options.data };
   const preferences = new Map(Object.entries(options.volumes ?? { friend: 100, self: 100 }));
-  const scale = options.scale ?? 1;
-  const volume = new Map([...preferences].map(([id, value]) => [id, value * scale]));
+  const getterDivisor = options.getterDivisor ?? 100;
+  const volume = new Map(preferences);
   const writes = [];
   let roster = options.roster ?? ["friend", "self"];
   let level = options.level ?? 0.4;
@@ -33,7 +33,9 @@ function fixture(t, options = {}) {
   const connect = () => {
     connection = {
       context: "default",
-      getLocalVolume: (id) => volume.get(id) ?? 100 * scale,
+      // Desktop Discord stores setter values as percentages but returns a
+      // normalized ratio. The web connection can return setter units instead.
+      getLocalVolume: (id) => (volume.get(id) ?? 100) / getterDivisor,
       setLocalVolume: (id, value) => {
         writes.push([id, value]);
         volume.set(id, value);
@@ -61,8 +63,8 @@ function fixture(t, options = {}) {
   };
   const setVolume = (id, value) => {
     preferences.set(id, value);
-    if (connection) connection.setLocalVolume(id, value * scale);
-    else volume.set(id, value * scale);
+    if (connection) connection.setLocalVolume(id, value);
+    else volume.set(id, value);
   };
   let actionWrites = 0;
   const actions = {

@@ -10,5 +10,6 @@ test("native half-volume test keeps the slider stable and restores playback", as
   await pending;
   assert.equal(f.volume.get("friend"), 100);
   assert.equal(p.testRunning, false);
+  assert.equal(p.status, p.t("testResult", p.t("confirmed")));
   p.stop();
 });

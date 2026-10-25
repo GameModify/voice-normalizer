@@ -5,13 +5,15 @@ const validVolume = (value) => Number.isFinite(value) && value >= 0;
 // The connection owns playback volume. MediaEngineStore remains the user's
 // preference; automatic writes never dispatch AUDIO_SET_LOCAL_VOLUME.
 class VolumeOutput {
-  constructor(connection, patcher) {
+  constructor(connection, patcher, readPreference) {
     this.connection = connection;
+    this.readPreference = readPreference;
     this.entries = new Map();
     this.ownWrite = false;
     this.supported =
       typeof connection?.getLocalVolume === "function" &&
       typeof connection?.setLocalVolume === "function" &&
+      typeof readPreference === "function" &&
       typeof patcher?.before === "function";
     if (!this.supported) return;
     try {
@@ -36,12 +38,23 @@ class VolumeOutput {
     if (!entry) {
       let base;
       try {
-        base = this.connection.getLocalVolume(id);
+        // Desktop getLocalVolume returns a ratio (1 at normal volume), while
+        // setLocalVolume accepts the same units as MediaEngineStore (100).
+        // Never feed the connection getter back into its setter.
+        base = this.readPreference(id);
       } catch (_) {
         return null;
       }
-      if (!validVolume(base)) return null;
+      if (!validVolume(base) || base === 0) return null;
       entry = { base, gain: 1, applied: base };
+      // Re-establish the saved preference before calibration. A previous
+      // plugin instance may have left a temporary playback correction behind.
+      this.ownWrite = true;
+      try {
+        this.connection.setLocalVolume(id, base);
+      } finally {
+        this.ownWrite = false;
+      }
       this.entries.set(id, entry);
     }
     return entry;

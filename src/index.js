@@ -178,7 +178,7 @@ module.exports = class VoiceNormalizer {
     this.writer = null;
     this.connection = conn;
     if (!conn) return;
-    this.output = new VolumeOutput(conn, BdApi.Patcher);
+    this.output = new VolumeOutput(conn, BdApi.Patcher, (id) => this.read(id));
     if (this.output.supported) {
       this.writer = (id, gain) => this.output.apply(id, gain);
       this.writerInfo = "Connection playback volume (user slider unchanged)";
@@ -554,21 +554,25 @@ module.exports = class VoiceNormalizer {
     }
     const output = this.output;
     if (!output.prepare(id)) return;
+    let originalReadback;
     this.testRunning = true;
     const generation = this.generation;
     let confirmed = false;
     try {
+      originalReadback = output.connection.getLocalVolume(id);
       if (!this.write(id, 0.5)) throw Error(this.lastWriteError);
       this.status = this.t("testStarted");
       await new Promise((resolve) => {
         const done = () => {
           clearTimeout(timer);
           try {
-            const entry = output.entries.get(id);
             const actual = output.connection.getLocalVolume(id);
+            const expected = originalReadback * 0.5;
             confirmed = Boolean(
-              entry &&
-              Math.abs(actual - entry.applied) <= Math.max(0.00001, Math.abs(entry.applied) * 0.03),
+              output.entries.has(id) &&
+              Number.isFinite(expected) &&
+              expected > 0 &&
+              Math.abs(actual - expected) <= Math.max(0.00001, Math.abs(expected) * 0.03),
             );
             output.restore(id, this.read(id) === 0);
           } catch (_) {}

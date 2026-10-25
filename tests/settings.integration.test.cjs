@@ -62,15 +62,46 @@ test("native volume synchronization is corrected without being mistaken for a ma
   assert.equal(f.preferences.get("friend"), 100);
 });
 
-test("relative normalization is independent of native volume units and allows headroom at a high slider setting", async (t) => {
-  const f = fixture(t, { level: 0.025, scale: 0.01, volumes: { friend: 200, self: 100 } });
+test("a getter in setter units also allows headroom at a high slider setting", async (t) => {
+  const f = fixture(t, { level: 0.025, getterDivisor: 1, volumes: { friend: 200, self: 100 } });
   const p = f.create();
   await f.tick(p, 40);
-  assert(f.volume.get("friend") > 3);
-  assert(f.volume.get("friend") <= 4);
+  assert(f.volume.get("friend") > 300);
+  assert(f.volume.get("friend") <= 400);
   assert.equal(f.preferences.get("friend"), 200);
   p.stop();
-  assert.equal(f.volume.get("friend"), 2);
+  assert.equal(f.volume.get("friend"), 200);
+});
+
+test("desktop getter ratios are never sent back as setter percentages", async (t) => {
+  const f = fixture(t, { level: 0.1 });
+  const p = f.create();
+  const conn = f.getConnection();
+  assert.equal(conn.getLocalVolume("friend"), 1);
+  await f.tick(p, 5);
+  f.setInput(0.5);
+  await f.tick(p, 30);
+  assert(conn.getLocalVolume("friend") >= p.settings.minGain);
+  assert(conn.getLocalVolume("friend") < 0.7);
+  assert.equal(f.preferences.get("friend"), 100);
+  assert(f.writes.every(([, value]) => value >= 100 * p.settings.minGain));
+  f.setVolume("friend", 60);
+  await f.tick(p, 3);
+  assert(conn.getLocalVolume("friend") >= 0.6 * p.settings.minGain);
+  p.stop();
+  assert.equal(conn.getLocalVolume("friend"), 0.6);
+  assert.equal(f.preferences.get("friend"), 60);
+});
+
+test("starting calibration repairs stale playback without touching the saved slider", async (t) => {
+  const f = fixture(t, { level: 0.1, seedReference: false });
+  f.getConnection().setLocalVolume("friend", 1);
+  assert.equal(f.getConnection().getLocalVolume("friend"), 0.01);
+  const p = f.create();
+  await f.tick(p, 3);
+  assert.equal(p.states.get("friend").reference, null);
+  assert.equal(f.getConnection().getLocalVolume("friend"), 1);
+  assert.equal(f.preferences.get("friend"), 100);
 });
 
 test("a shout is reduced and ordinary speech recovers without the old long-average delay", async (t) => {
