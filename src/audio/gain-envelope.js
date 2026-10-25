@@ -1,6 +1,6 @@
 "use strict";
 
-const RECOVERY_HOLD_MS = 900;
+const RECOVERY_HOLD_MS = 350;
 const DEADBAND = Math.log(1.015);
 
 // Smooth Discord's internal volume ratio, not calibrated audio dB. Limit both
@@ -25,9 +25,13 @@ function smoothVolume(state, current, desired, timestamp, settings) {
     if (elapsed <= 0) return current;
   }
 
-  const speed = reducing ? settings.attack : settings.release;
+  const speed = reducing
+    ? settings.attack
+    : current < 1
+      ? Math.max(0.2, settings.release)
+      : settings.release;
   const weight = 1 - Math.pow(1 - speed, elapsed / 100);
-  const maxStep = (speed * (reducing ? 3 : 2) * elapsed) / 1000;
+  const maxStep = (speed * (reducing ? 3 : current < 1 ? 4 : 3) * elapsed) / 1000;
   const step = Math.max(-maxStep, Math.min(maxStep, difference * weight));
   return current * Math.exp(step);
 }

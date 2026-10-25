@@ -2,7 +2,7 @@
  * @name VoiceNormalizer
  * @author GameModify
  * @authorLink https://github.com/GameModify
- * @version 1.3.0
+ * @version 1.4.0-beta.2
  * @description Adaptive voice leveling for selected users or everyone. Profiles, reduce-only mode, and English/Russian controls.
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -18,7 +18,7 @@ var __commonJS = (cb, mod) => function __require() {
 var require_speech_activity = __commonJS({
   "src/audio/speech-activity.js"(exports2, module2) {
     "use strict";
-    var MIN_ACTIVITY_LEVEL = 8e-3;
+    var MIN_ACTIVITY_LEVEL = 5e-4;
     var REQUIRED_ACTIVE_POLLS = 3;
     function detectSpeech(state, level, detected) {
       const active = (detected === true || detected === 1) && level >= MIN_ACTIVITY_LEVEL;
@@ -38,7 +38,6 @@ var require_settings = __commonJS({
     var PRESETS = Object.freeze({
       soft: Object.freeze({
         profile: "soft",
-        targetLevel: 0.095,
         maxGain: 1.3,
         minGain: 0.65,
         attack: 0.4,
@@ -46,7 +45,6 @@ var require_settings = __commonJS({
       }),
       balanced: Object.freeze({
         profile: "balanced",
-        targetLevel: 0.095,
         maxGain: 2,
         minGain: 0.45,
         attack: 0.65,
@@ -54,7 +52,6 @@ var require_settings = __commonJS({
       }),
       aggressive: Object.freeze({
         profile: "aggressive",
-        targetLevel: 0.105,
         maxGain: 2,
         minGain: 0.35,
         attack: 0.85,
@@ -63,7 +60,6 @@ var require_settings = __commonJS({
     });
     var DEFAULT_SETTINGS2 = PRESETS.balanced;
     var BOUNDS = Object.freeze({
-      targetLevel: [0.04, 0.25],
       maxGain: [1, 2],
       minGain: [0.25, 1],
       attack: [0.2, 0.9],
@@ -96,23 +92,22 @@ var require_leveler = __commonJS({
     "use strict";
     var { detectSpeech } = require_speech_activity();
     var { DEFAULT_SETTINGS: DEFAULT_SETTINGS2 } = require_settings();
-    function createUserState2(base) {
+    function createUserState2(base, reference = null) {
       return {
         base,
-        lastWrite: null,
-        lastWriteTime: 0,
+        reference,
+        calibration: [],
         ema: null,
         voiceCount: 0,
-        writeUnconfirmed: 0,
-        lastLevel: 0,
         lastGain: 1,
         stableGain: 1,
+        lastLevel: 0,
         activityPolls: 0,
-        lastSpeechSampleAt: null,
         talking: false,
+        lastSpeechSampleAt: null,
+        lastObservationAt: null,
         envelopeAt: null,
-        recoveryHoldMs: 0,
-        lastObservationAt: null
+        recoveryHoldMs: 0
       };
     }
     function interruptSpeech2(state) {
@@ -123,32 +118,134 @@ var require_leveler = __commonJS({
       state.envelopeAt = null;
     }
     function calculateGain2(state, level, detected, timestamp, settings = DEFAULT_SETTINGS2) {
-      if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500) {
+      if (state.lastObservationAt !== null && timestamp - state.lastObservationAt > 500)
         interruptSpeech2(state);
-      }
       state.lastObservationAt = timestamp;
       const { active, confirmed } = detectSpeech(state, level, detected);
       if (confirmed) {
-        const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(50, Math.min(250, timestamp - state.lastSpeechSampleAt));
-        const window = state.ema !== null && level < state.ema ? 6e3 : 3e3;
-        const alpha = 1 - Math.exp(-elapsed / window);
+        const elapsed = state.lastSpeechSampleAt === null ? 100 : Math.max(0, Math.min(250, timestamp - state.lastSpeechSampleAt));
+        const alpha = 1 - Math.exp(-elapsed / 450);
         state.ema = state.ema === null ? level : state.ema * (1 - alpha) + level * alpha;
         state.lastSpeechSampleAt = timestamp;
         state.voiceCount++;
+        if (state.reference === null) {
+          state.calibration.push(level);
+          if (state.calibration.length >= 15) {
+            const sorted = [...state.calibration].sort((a, b) => a - b);
+            state.reference = sorted[Math.floor(sorted.length / 2)];
+            state.calibration = [];
+          }
+        }
       }
+      if (state.reference === null) return 1;
       let gain = state.stableGain;
-      if (confirmed && state.voiceCount >= 7 && state.ema !== null) {
-        gain = settings.targetLevel / Math.max(state.ema, 6e-3);
-      } else if (confirmed && level > 0.18) {
-        gain = Math.min(1, 0.18 / level);
+      if (confirmed && state.ema > 0) {
+        const difference = Math.log(state.reference / state.ema);
+        const deadband = Math.log(1.12);
+        const strength = settings.profile === "soft" ? 0.6 : settings.profile === "aggressive" ? 0.95 : 0.8;
+        gain = Math.exp(
+          Math.sign(difference) * Math.max(0, Math.abs(difference) - deadband) * strength
+        );
+        gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
+        if (settings.mode === "attenuate") gain = Math.min(1, gain);
+        state.stableGain = gain;
       }
+      if (active && level > state.reference * 1.8)
+        gain = Math.min(gain, state.reference * 1.8 / level);
       gain = Math.max(settings.minGain, Math.min(settings.maxGain, gain));
-      if (settings.mode === "attenuate") gain = Math.min(1, gain);
-      if (confirmed) state.stableGain = gain;
-      if (active && level > 0.18) gain = Math.max(settings.minGain, Math.min(gain, 0.18 / level));
-      return gain;
+      return settings.mode === "attenuate" ? Math.min(1, gain) : gain;
     }
     module2.exports = { createUserState: createUserState2, calculateGain: calculateGain2, interruptSpeech: interruptSpeech2 };
+  }
+});
+
+// src/discord/volume-output.js
+var require_volume_output = __commonJS({
+  "src/discord/volume-output.js"(exports2, module2) {
+    "use strict";
+    var validVolume = (value) => Number.isFinite(value) && value >= 0;
+    var VolumeOutput2 = class {
+      constructor(connection, patcher, readPreference) {
+        this.connection = connection;
+        this.readPreference = readPreference;
+        this.entries = /* @__PURE__ */ new Map();
+        this.ownWrite = false;
+        this.supported = typeof connection?.getLocalVolume === "function" && typeof connection?.setLocalVolume === "function" && typeof readPreference === "function" && typeof patcher?.before === "function";
+        if (!this.supported) return;
+        try {
+          this.unpatch = patcher.before("VoiceNormalizer", connection, "setLocalVolume", (_, args) => {
+            const entry = this.entries.get(String(args[0]));
+            if (this.ownWrite || !entry || !validVolume(args[1])) return;
+            entry.base = args[1];
+            entry.applied = args[1] * entry.gain;
+            args[1] = entry.applied;
+          });
+          if (typeof this.unpatch !== "function") this.supported = false;
+        } catch (_) {
+          this.supported = false;
+        }
+      }
+      prepare(id) {
+        id = String(id);
+        if (!this.supported) return null;
+        let entry = this.entries.get(id);
+        if (!entry) {
+          let base;
+          try {
+            base = this.readPreference(id);
+          } catch (_) {
+            return null;
+          }
+          if (!validVolume(base) || base === 0) return null;
+          entry = { base, gain: 1, applied: base };
+          this.ownWrite = true;
+          try {
+            this.connection.setLocalVolume(id, base);
+          } finally {
+            this.ownWrite = false;
+          }
+          this.entries.set(id, entry);
+        }
+        return entry;
+      }
+      apply(id, gain) {
+        const entry = this.prepare(id);
+        if (!entry || !Number.isFinite(gain) || gain < 0 || gain > 2) return false;
+        const next = entry.base * gain;
+        if (!validVolume(next)) return false;
+        this.ownWrite = true;
+        try {
+          this.connection.setLocalVolume(String(id), next);
+          entry.gain = gain;
+          entry.applied = next;
+          return true;
+        } finally {
+          this.ownWrite = false;
+        }
+      }
+      restore(id, muted = false) {
+        const entry = this.entries.get(String(id));
+        if (!entry) return;
+        this.entries.delete(String(id));
+        this.ownWrite = true;
+        try {
+          this.connection.setLocalVolume(String(id), muted ? 0 : entry.base);
+        } finally {
+          this.ownWrite = false;
+        }
+      }
+      dispose() {
+        for (const id of [...this.entries.keys()]) {
+          try {
+            this.restore(id);
+          } catch (_) {
+          }
+        }
+        this.unpatch?.();
+        this.supported = false;
+      }
+    };
+    module2.exports = { VolumeOutput: VolumeOutput2 };
   }
 });
 
@@ -156,7 +253,7 @@ var require_leveler = __commonJS({
 var require_gain_envelope = __commonJS({
   "src/audio/gain-envelope.js"(exports2, module2) {
     "use strict";
-    var RECOVERY_HOLD_MS = 900;
+    var RECOVERY_HOLD_MS = 350;
     var DEADBAND = Math.log(1.015);
     function smoothVolume2(state, current, desired, timestamp, settings) {
       let elapsed = state.envelopeAt === null ? 100 : Math.max(0, Math.min(250, timestamp - state.envelopeAt));
@@ -174,9 +271,9 @@ var require_gain_envelope = __commonJS({
         elapsed -= held;
         if (elapsed <= 0) return current;
       }
-      const speed = reducing ? settings.attack : settings.release;
+      const speed = reducing ? settings.attack : current < 1 ? Math.max(0.2, settings.release) : settings.release;
       const weight = 1 - Math.pow(1 - speed, elapsed / 100);
-      const maxStep = speed * (reducing ? 3 : 2) * elapsed / 1e3;
+      const maxStep = speed * (reducing ? 3 : current < 1 ? 4 : 3) * elapsed / 1e3;
       const step = Math.max(-maxStep, Math.min(maxStep, difference * weight));
       return current * Math.exp(step);
     }
@@ -225,7 +322,7 @@ var require_i18n = __commonJS({
       active: "Voice leveling active",
       muted: "Muted in Discord",
       unavailable: "Waiting for voice data",
-      writerWaiting: "Waiting for Discord volume controls",
+      writerWaiting: "Independent voice volume control is unavailable",
       noData: "No data yet",
       none: "None",
       unknown: "Not checked",
@@ -244,7 +341,7 @@ var require_i18n = __commonJS({
       reset: "Reset learning",
       resetDone: "Voice learning reset",
       settingsTitle: "VoiceNormalizer \xB7 {0}",
-      help: "Uses each person's Discord volume as the baseline. Choices are saved; voice levels are learned again after reconnecting.",
+      help: "Your Discord volume slider stays under your control. Initial calibration needs about two seconds of ordinary speech; automatic correction is applied separately.",
       scope: "Who to process",
       selected: "Selected people",
       all: "Everyone in the voice channel",
@@ -271,15 +368,14 @@ var require_i18n = __commonJS({
       excluded: "Excluded",
       stopAll: "Disable for everyone",
       advanced: "Advanced",
-      advancedNote: "RTP is relative audio statistics, not Discord slider percentage or LUFS. Recovery is held after attenuation, then limited in speed during speech. This is not an instant audio limiter.",
-      targetLevel: "Target RTP level",
+      advancedNote: "RTP is relative audio statistics, not Discord slider percentage or LUFS. Correction follows each person\u2019s learned ordinary voice. This is not an instant audio limiter.",
       maxGain: "Maximum boost",
       minGain: "Minimum gain",
       attack: "Volume reduction speed",
       release: "Volume increase speed",
       perPoll: "per 100 ms",
       baseline: "of baseline",
-      correction: "Volume: {0}% of baseline",
+      correction: "Automatic correction: \xD7{0}",
       diagnostics: "Diagnostics",
       test: "Test \xD70.5",
       testBusy: "Disable voice leveling before running the volume test",
@@ -306,7 +402,7 @@ var require_i18n = __commonJS({
       active: "\u0412\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u043D\u0438\u0435 \u0430\u043A\u0442\u0438\u0432\u043D\u043E",
       muted: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0432 Discord \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u0430",
       unavailable: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435",
-      writerWaiting: "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C\u044E Discord",
+      writerWaiting: "\u041D\u0435\u0437\u0430\u0432\u0438\u0441\u0438\u043C\u043E\u0435 \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0433\u043E\u043B\u043E\u0441\u043E\u043C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E",
       noData: "\u0415\u0449\u0451 \u043D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445",
       none: "\u041D\u0435\u0442",
       unknown: "\u041D\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D",
@@ -325,7 +421,7 @@ var require_i18n = __commonJS({
       reset: "\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u043E\u0431\u0443\u0447\u0435\u043D\u0438\u0435",
       resetDone: "\u041E\u0431\u0443\u0447\u0435\u043D\u0438\u0435 \u0433\u043E\u043B\u043E\u0441\u0430 \u0441\u0431\u0440\u043E\u0448\u0435\u043D\u043E",
       settingsTitle: "VoiceNormalizer \xB7 {0}",
-      help: "\u0417\u0430 \u043E\u0441\u043D\u043E\u0432\u0443 \u0431\u0435\u0440\u0451\u0442\u0441\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u0432 Discord. \u0412\u044B\u0431\u043E\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F; \u043F\u043E\u0441\u043B\u0435 \u043F\u0435\u0440\u0435\u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0443\u0440\u043E\u0432\u0435\u043D\u044C \u0440\u0435\u0447\u0438 \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u044F\u0435\u0442\u0441\u044F \u0437\u0430\u043D\u043E\u0432\u043E.",
+      help: "\u041F\u043E\u043B\u0437\u0443\u043D\u043E\u043A Discord \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F \u043F\u043E\u0434 \u0432\u0430\u0448\u0438\u043C \u0443\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435\u043C. \u0414\u043B\u044F \u043D\u0430\u0447\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043E\u0431\u0443\u0447\u0435\u043D\u0438\u044F \u043D\u0443\u0436\u043D\u044B \u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0434\u0432\u0435 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u043E\u0431\u044B\u0447\u043D\u043E\u0439 \u0440\u0435\u0447\u0438; \u0430\u0432\u0442\u043E\u043A\u043E\u0440\u0440\u0435\u043A\u0446\u0438\u044F \u043F\u0440\u0438\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E.",
       scope: "\u041A\u043E\u0433\u043E \u043E\u0431\u0440\u0430\u0431\u0430\u0442\u044B\u0432\u0430\u0442\u044C",
       selected: "\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u043B\u044E\u0434\u0435\u0439",
       all: "\u0412\u0441\u0435\u0445 \u0432 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u043E\u043C \u043A\u0430\u043D\u0430\u043B\u0435",
@@ -352,15 +448,14 @@ var require_i18n = __commonJS({
       excluded: "\u0418\u0441\u043A\u043B\u044E\u0447\u0451\u043D",
       stopAll: "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0434\u043B\u044F \u0432\u0441\u0435\u0445",
       advanced: "\u0414\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u043E",
-      advancedNote: "RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0430\u0443\u0434\u0438\u043E, \u0430 \u043D\u0435 \u043F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord \u0438\u043B\u0438 LUFS. \u041F\u043E\u0441\u043B\u0435 \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F \u0432\u043E\u0437\u0432\u0440\u0430\u0442 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0438 \u0438\u0434\u0451\u0442 \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0447\u0438. \u042D\u0442\u043E \u043D\u0435 \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u043E\u043B\u0438\u043C\u0438\u0442\u0435\u0440.",
-      targetLevel: "\u0426\u0435\u043B\u0435\u0432\u043E\u0439 \u0443\u0440\u043E\u0432\u0435\u043D\u044C RTP",
+      advancedNote: "RTP \u2014 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043A\u0430 \u0430\u0443\u0434\u0438\u043E, \u0430 \u043D\u0435 \u043F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E\u043B\u0437\u0443\u043D\u043A\u0430 Discord \u0438\u043B\u0438 LUFS. \u041A\u043E\u0440\u0440\u0435\u043A\u0446\u0438\u044F \u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044F \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u043E\u0431\u044B\u0447\u043D\u043E\u0433\u043E \u0433\u043E\u043B\u043E\u0441\u0430 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430. \u042D\u0442\u043E \u043D\u0435 \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u043E\u043B\u0438\u043C\u0438\u0442\u0435\u0440.",
       maxGain: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E\u0435 \u0443\u0441\u0438\u043B\u0435\u043D\u0438\u0435",
       minGain: "\u041C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043A\u043E\u044D\u0444\u0444\u0438\u0446\u0438\u0435\u043D\u0442 \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
       attack: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u0440\u0438\u0433\u043B\u0443\u0448\u0435\u043D\u0438\u044F",
       release: "\u0421\u043A\u043E\u0440\u043E\u0441\u0442\u044C \u043F\u043E\u0432\u044B\u0448\u0435\u043D\u0438\u044F \u0433\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u0438",
       perPoll: "\u0437\u0430 100 \u043C\u0441",
       baseline: "\u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
-      correction: "\u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C: {0}% \u043E\u0442 \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0439",
+      correction: "\u0410\u0432\u0442\u043E\u043A\u043E\u0440\u0440\u0435\u043A\u0446\u0438\u044F: \xD7{0}",
       diagnostics: "\u0414\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430",
       test: "\u0422\u0435\u0441\u0442 \xD70.5",
       testBusy: "\u041F\u0435\u0440\u0435\u0434 \u0440\u0443\u0447\u043D\u044B\u043C \u0442\u0435\u0441\u0442\u043E\u043C \u043E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0440\u0430\u0432\u043D\u0438\u0432\u0430\u043D\u0438\u0435",
@@ -394,7 +489,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "voice-normalizer",
-      version: "1.3.0",
+      version: "1.4.0-beta.2",
       private: true,
       description: "Adaptive voice leveler for BetterDiscord",
       scripts: {
@@ -479,7 +574,6 @@ var require_settings_controls = __commonJS({
     var { translate: translate2 } = require_i18n();
     var { element, choices } = require_dom();
     var FIELDS = [
-      ["targetLevel", 0.04, 0.25, 5e-3],
       ["maxGain", 1, 2, 0.05],
       ["minGain", 0.25, 1, 0.05],
       ["attack", 0.2, 0.9, 0.05],
@@ -540,8 +634,8 @@ var require_settings_controls = __commonJS({
         for (const { key, slider, output } of sliders) {
           if (doc.activeElement !== slider) slider.value = String(current[key]);
           const value = current[key];
-          const suffix = ["attack", "release"].includes(key) ? t("perPoll") : key === "targetLevel" ? "RTP" : t("baseline");
-          output.textContent = `${t(key)}: ${(value * 100).toFixed(key === "targetLevel" ? 1 : 0)}% ${suffix}`;
+          const suffix = ["attack", "release"].includes(key) ? t("perPoll") : t("baseline");
+          output.textContent = `${t(key)}: ${(value * 100).toFixed(0)}% ${suffix}`;
         }
       }
       section.refresh = refresh;
@@ -806,7 +900,7 @@ var require_settings_panel = __commonJS({
             card.name.textContent = names.get(id) || user?.globalName || user?.username || id;
             const selected = plugin.isSelected(id);
             card.status.textContent = t(plugin.userStatus(id, roster));
-            card.detail.textContent = selected && plugin.states.has(id) ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0)) : "";
+            card.detail.textContent = selected && plugin.states.has(id) ? t("correction", plugin.getLiveSnapshot(id).ratio.toFixed(2)) : "";
             card.profile.update(plugin.profileFor(id));
             card.toggle.textContent = t(selected ? "disable" : "enable");
             card.toggle.setAttribute("aria-pressed", String(selected));
@@ -888,6 +982,7 @@ var require_stats_request = __commonJS({
 
 // src/index.js
 var { createUserState, calculateGain, interruptSpeech } = require_leveler();
+var { VolumeOutput } = require_volume_output();
 var { smoothVolume } = require_gain_envelope();
 var { DEFAULT_SETTINGS, normalizeSettings, getPreset } = require_settings();
 var { normalizePreferences } = require_preferences();
@@ -898,6 +993,9 @@ module.exports = class VoiceNormalizer {
   constructor() {
     this.targets = /* @__PURE__ */ new Set();
     this.states = /* @__PURE__ */ new Map();
+    this.references = /* @__PURE__ */ new Map();
+    this.output = null;
+    this.runtimePhase = null;
     this.enabled = false;
     this.started = false;
     this.timer = null;
@@ -919,8 +1017,6 @@ module.exports = class VoiceNormalizer {
       latest: "\u2014"
     };
     this.testRunning = false;
-    this.testBaseline = null;
-    this.maxInternalVolume = 200;
     this.settings = { ...DEFAULT_SETTINGS };
     this.preferences = normalizePreferences();
     this.panelRefreshers = /* @__PURE__ */ new Set();
@@ -1018,19 +1114,21 @@ module.exports = class VoiceNormalizer {
   }
   resetLearning(id) {
     this.restore(String(id));
+    this.references.delete(String(id));
     this.toast(this.t("resetDone"));
     this.refreshPanels();
   }
   userStatus(id, participants = null) {
     if (!this.started || !this.isSelected(id)) return "off";
     if (!this.connection) return "waitingChannel";
+    if (!this.writer) return "writerWaiting";
     const roster = participants ?? this.participants();
     if (!roster.some((person) => person.id === String(id))) return "waitingUser";
     if (this.read(id) === 0) return "muted";
     const state = this.states.get(String(id));
     if (!state || performance.now() - (state.sampleAt ?? 0) > 1500) return "unavailable";
     if (!state.talking) return "waitingSpeech";
-    return state.voiceCount < 7 ? "learning" : "active";
+    return state.reference === null ? "learning" : "active";
   }
   loadTargets() {
     try {
@@ -1053,7 +1151,32 @@ module.exports = class VoiceNormalizer {
   }
   resetConnection(conn = null) {
     for (const id of [...this.states.keys()]) this.restore(id);
+    this.output?.dispose();
+    this.output = null;
+    this.writer = null;
     this.connection = conn;
+    if (!conn) return;
+    this.output = new VolumeOutput(conn, BdApi.Patcher, (id) => this.read(id));
+    if (this.output.supported) {
+      this.writer = (id, gain) => this.output.apply(id, gain);
+      this.writerInfo = "Connection playback volume (user slider unchanged)";
+      this.reportRuntime("ready");
+    } else {
+      this.writerInfo = "Independent connection volume is unavailable";
+      this.reportRuntime("unavailable");
+    }
+  }
+  reportRuntime(phase) {
+    if (this.runtimePhase === phase) return;
+    this.runtimePhase = phase;
+    try {
+      BdApi.Data?.save?.("VoiceNormalizer", "runtime", {
+        version: require_package().version,
+        output: "connection",
+        phase
+      });
+    } catch (_) {
+    }
   }
   suspend() {
     this.enabled = false;
@@ -1100,26 +1223,14 @@ module.exports = class VoiceNormalizer {
   read(id) {
     try {
       const value = this.store()?.getLocalVolume?.(String(id));
-      return Number.isFinite(value) && value >= 0 && value < 1e3 ? value : null;
+      return Number.isFinite(value) && value >= 0 ? value : null;
     } catch (_) {
       return null;
     }
   }
   resolveWriter() {
-    this.writer = null;
-    try {
-      const mod = BdApi.Webpack.getModule(
-        (m) => m && typeof m.setLocalVolume === "function" && typeof m.getLocalVolume !== "function" && typeof m.getStats !== "function"
-      );
-      if (mod) {
-        this.writer = (id, value) => mod.setLocalVolume(String(id), value, "default");
-        this.writerInfo = "MediaEngineActions.setLocalVolume (default)";
-        return true;
-      }
-    } catch (_) {
-    }
-    this.writerInfo = "setLocalVolume not found";
-    return false;
+    if (!this.writer) this.resetConnection(this.connection || this.connect());
+    return Boolean(this.writer);
   }
   connect() {
     try {
@@ -1170,42 +1281,33 @@ module.exports = class VoiceNormalizer {
     } catch (_) {
     }
   }
-  write(id, value) {
-    id = String(id);
-    const limit = Math.max(
-      this.maxInternalVolume,
-      this.states.get(id)?.base || 0,
-      this.testBaseline?.id === id ? this.testBaseline.base : 0
-    );
-    if (!this.writer || !Number.isFinite(value) || value < 0 || value > limit) {
-      this.lastWriteError = "Value " + String(value) + " outside allowed range 0\u2013" + limit;
-      return false;
-    }
+  write(id, gain) {
+    if (!this.writer || !Number.isFinite(gain) || gain < 0 || gain > 2) return false;
     try {
-      this.writer(String(id), value);
+      if (!this.writer(String(id), gain)) return false;
       this.diagnostic.writes++;
-      this.lastWriteError = "None";
+      this.lastWriteError = this.t("none");
+      this.reportRuntime("applied");
       return true;
-    } catch (e) {
-      this.lastWriteError = String(e?.message || e);
+    } catch (error) {
+      this.lastWriteError = String(error?.message || error);
+      this.reportRuntime("error");
       this.status = this.t("volumeError", this.lastWriteError);
       return false;
     }
   }
-  ceilingFor(base) {
-    return base > 4 ? Math.max(200, base) : Math.min(4, base * 2);
-  }
-  volumeTolerance(reference, relative, baseline, absolute) {
-    return Math.max(Math.min(absolute, baseline * 0.01), reference * relative);
-  }
   restore(id) {
-    const st = this.states.get(id);
-    if (!st) return;
-    const now = this.read(id);
-    if (st.lastWrite !== null && Number.isFinite(now) && now > 0 && Math.abs(now - st.lastWrite) <= this.volumeTolerance(st.lastWrite, 0.035, st.base, 0.03)) {
-      this.write(id, st.base);
+    const state = this.states.get(String(id));
+    if (state?.reference > 0) {
+      this.references.delete(String(id));
+      this.references.set(String(id), state.reference);
+      if (this.references.size > 256) this.references.delete(this.references.keys().next().value);
     }
-    this.states.delete(id);
+    try {
+      this.output?.restore(String(id), this.read(id) === 0);
+    } catch (_) {
+    }
+    this.states.delete(String(id));
   }
   turnOff() {
     this.suspend();
@@ -1338,59 +1440,35 @@ module.exports = class VoiceNormalizer {
           continue;
         }
         const level = input.level;
-        const now = this.read(id);
-        if (!Number.isFinite(now) || now <= 0) {
-          this.states.delete(id);
-          this.status = this.t(now === 0 ? "muted" : "unavailable");
+        const base = this.read(id);
+        if (!Number.isFinite(base) || base <= 0) {
+          if (base === 0) this.restore(id);
+          this.status = this.t(base === 0 ? "muted" : "unavailable");
           continue;
         }
         let st = this.states.get(id);
-        if (!st || st.lastWrite === null && st.base !== now) {
-          st = createUserState(now);
+        if (!st) {
+          st = createUserState(base, this.references.get(id) ?? null);
           this.states.set(id, st);
         }
+        st.base = base;
         st.lastLevel = level;
         st.sampleAt = performance.now();
-        if (st.lastWrite !== null) {
-          const diff = Math.abs(now - st.lastWrite);
-          if (diff > this.volumeTolerance(st.lastWrite, 0.04, st.base, 0.04)) {
-            if (performance.now() - st.lastWriteTime < 700) {
-              st.writeUnconfirmed++;
-              continue;
-            }
-            st = createUserState(now);
-            st.lastLevel = level;
-            st.sampleAt = performance.now();
-            this.states.set(id, st);
-            this.status = this.t("manualBase");
-            continue;
-          }
-          st.writeUnconfirmed = 0;
-          this.diagnostic.confirmed++;
-        }
+        if (!this.output.prepare(id)) continue;
         const settings = this.settingsFor(id);
-        const timestamp = performance.now();
-        const gain = calculateGain(st, level, input.detected, timestamp, settings);
-        const ceiling = Math.min(
-          this.ceilingFor(st.base),
-          settings.mode === "attenuate" ? st.base : Infinity
-        );
-        const floor = Math.min(0.02, st.base * settings.minGain);
-        const desired = Math.max(floor, Math.min(ceiling, st.base * gain));
+        const gain = calculateGain(st, level, input.detected, st.sampleAt, settings);
+        const desired = settings.mode === "attenuate" ? Math.min(1, gain) : gain;
         const next = Math.max(
-          floor,
-          Math.min(ceiling, smoothVolume(st, now, desired, timestamp, settings))
+          settings.minGain,
+          Math.min(settings.maxGain, smoothVolume(st, st.lastGain, desired, st.sampleAt, settings))
         );
-        st.lastGain = next / st.base;
-        this.diagnostic.latest = "audio=" + level.toFixed(3) + ", average=" + (st.ema ?? 0).toFixed(3) + ", gain=" + st.lastGain.toFixed(2) + "x, store=" + now.toFixed(3) + "\u2192" + next.toFixed(3);
+        const correction = settings.mode === "attenuate" ? Math.min(1, next) : next;
+        this.diagnostic.latest = "audio=" + level.toFixed(4) + ", reference=" + (st.reference ?? 0).toFixed(4) + ", correction=" + correction.toFixed(2) + "x";
         this.status = this.t(
-          !st.talking ? "waitingSpeech" : st.voiceCount < 7 ? "learning" : "active"
+          st.reference === null ? "learning" : !st.talking ? "waitingSpeech" : "active"
         );
-        if (Math.abs(next - now) > Math.min(8e-3, st.base * 5e-3)) {
-          if (this.write(id, next)) {
-            st.lastWrite = next;
-            st.lastWriteTime = performance.now();
-          }
+        if (Math.abs(correction - st.lastGain) > 1e-3) {
+          if (this.write(id, correction)) st.lastGain = correction;
         }
       }
     } catch (e) {
@@ -1402,51 +1480,58 @@ module.exports = class VoiceNormalizer {
     }
   }
   async halfVolumeTest(id) {
+    if (!this.started) return;
     if (this.enabled || this.testRunning) {
       this.toast(this.t("testBusy"), "warning");
       return;
     }
-    if (!this.writer && !this.resolveWriter()) {
+    if (!this.resolveWriter()) {
       this.toast(this.t("noWriter"), "warning");
       return;
     }
     id = String(id);
-    const before = this.read(id);
-    if (!Number.isFinite(before) || before <= 0) {
+    if (!(this.read(id) > 0)) {
       this.toast(this.t("noVolume"), "warning");
       return;
     }
+    const output = this.output;
+    if (!output.prepare(id)) return;
+    let originalReadback;
     this.testRunning = true;
-    this.testBaseline = { id, base: before };
-    const target = before * 0.5;
-    const tolerance = this.volumeTolerance(target, 0.08, before, 0.035);
+    const generation = this.generation;
+    let confirmed = false;
     try {
-      if (!this.write(id, target)) throw new Error(this.lastWriteError);
+      originalReadback = output.connection.getLocalVolume(id);
+      if (!this.write(id, 0.5)) throw Error(this.lastWriteError);
       this.status = this.t("testStarted");
       await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 3e3);
-        this.cancelTest = () => {
+        const done = () => {
           clearTimeout(timer);
-          const now = this.read(id);
-          if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
-            this.write(id, before);
+          try {
+            const actual = output.connection.getLocalVolume(id);
+            const expected = originalReadback * 0.5;
+            confirmed = Boolean(
+              output.entries.has(id) && Number.isFinite(expected) && expected > 0 && Math.abs(actual - expected) <= Math.max(1e-5, Math.abs(expected) * 0.03)
+            );
+            output.restore(id, this.read(id) === 0);
+          } catch (_) {
+          }
           resolve();
         };
+        const timer = setTimeout(done, 3e3);
+        this.cancelTest = done;
       });
-      const after = this.read(id);
-      const ok = Number.isFinite(after) && after > 0 && Math.abs(after - target) < tolerance;
-      this.status = this.t("testResult", this.t(ok ? "confirmed" : "unconfirmed"));
-    } catch (e) {
-      this.status = this.t("error", String(e?.message || e));
+      if (this.started && generation === this.generation)
+        this.status = this.t("testResult", this.t(confirmed ? "confirmed" : "unconfirmed"));
+    } catch (error) {
+      if (this.started && generation === this.generation)
+        this.status = this.t("error", String(error?.message || error));
     } finally {
       try {
-        const now = this.read(id);
-        if (Number.isFinite(now) && now > 0 && Math.abs(now - target) < tolerance)
-          this.write(id, before);
+        output.restore(id, this.read(id) === 0);
       } catch (_) {
       }
       this.testRunning = false;
-      this.testBaseline = null;
       this.cancelTest = null;
     }
   }
@@ -1484,25 +1569,20 @@ module.exports = class VoiceNormalizer {
     }
   }
   getLiveSnapshot(id) {
-    const st = this.states.get(String(id));
+    const state = this.states.get(String(id));
     const active = this.isSelected(id);
-    const actual = this.read(id);
-    const base = st?.base;
-    const relative = Number.isFinite(actual) && Number.isFinite(base) && base > 0 ? actual / base : 1;
-    const ratio = Math.max(0, Math.min(2, relative));
-    const gainDb = ratio > 0 ? 20 * Math.log10(ratio) : -60;
-    const level = Number.isFinite(st?.lastLevel) ? st.lastLevel : 0;
-    const average = Number.isFinite(st?.ema) ? st.ema : 0;
+    const base = this.read(id);
+    const ratio = state?.lastGain ?? 1;
     return {
       active,
       ratio,
-      gainDb,
-      level,
-      average,
-      hasAudio: Boolean(st && st.voiceCount > 0),
-      volumeKnown: Number.isFinite(actual),
-      current: actual,
-      base
+      level: state?.lastLevel ?? 0,
+      average: state?.ema ?? 0,
+      hasAudio: Boolean(state?.voiceCount),
+      volumeKnown: Number.isFinite(base),
+      current: base,
+      base,
+      reference: state?.reference ?? null
     };
   }
   menuMeterComponent() {
@@ -1535,7 +1615,7 @@ module.exports = class VoiceNormalizer {
         data.active && Number.isFinite(data.base) ? R.createElement(
           "div",
           { style: { marginTop: 5, color: "var(--text-muted)" } },
-          this.t("correction", (data.ratio * 100).toFixed(0))
+          this.t("correction", data.ratio.toFixed(2))
         ) : null
       );
     };

@@ -255,7 +255,7 @@ function createSettingsPanel(plugin, doc) {
         card.status.textContent = t(plugin.userStatus(id, roster));
         card.detail.textContent =
           selected && plugin.states.has(id)
-            ? t("correction", (plugin.getLiveSnapshot(id).ratio * 100).toFixed(0))
+            ? t("correction", plugin.getLiveSnapshot(id).ratio.toFixed(2))
             : "";
         card.profile.update(plugin.profileFor(id));
         card.toggle.textContent = t(selected ? "disable" : "enable");

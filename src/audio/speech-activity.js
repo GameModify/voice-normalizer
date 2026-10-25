@@ -2,7 +2,7 @@
 
 // Audio statistics do not identify speech with certainty. This deliberately
 // conservative gate excludes isolated one- or two-poll events from the average.
-const MIN_ACTIVITY_LEVEL = 0.008;
+const MIN_ACTIVITY_LEVEL = 0.0005;
 const REQUIRED_ACTIVE_POLLS = 3;
 
 function detectSpeech(state, level, detected) {

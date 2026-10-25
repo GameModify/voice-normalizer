@@ -14,7 +14,6 @@ const { createSettingsControls } = require("../src/ui/settings-controls");
 
 test("balanced profile preserves the original normalization constants", () => {
   const settings = getPreset("balanced");
-  assert.equal(settings.targetLevel, 0.095);
   assert.equal(settings.maxGain, 2);
   assert.equal(settings.minGain, 0.45);
   assert.equal(settings.attack, 0.65);
@@ -31,15 +30,14 @@ test("invalid saved settings fall back safely and valid values are bounded", () 
     attack: -100,
     release: Infinity,
   });
-  assert.equal(settings.targetLevel, BOUNDS.targetLevel[0]);
   assert.equal(settings.maxGain, 2);
   assert.equal(settings.minGain, DEFAULT_SETTINGS.minGain);
   assert.equal(settings.attack, 0.2);
   assert.equal(settings.release, DEFAULT_SETTINGS.release);
 });
 
-test("custom target changes gain; maximum and minimum multipliers are enforced", () => {
-  const quiet = createUserState(100);
+test("custom gain limits apply to deviations from the learned reference", () => {
+  const quiet = createUserState(100, 0.1);
   quiet.ema = 0.045;
   quiet.voiceCount = 15;
   const custom = normalizeSettings({
@@ -53,7 +51,7 @@ test("custom target changes gain; maximum and minimum multipliers are enforced",
   for (let t = 0; t < 500; t += 100) calculateGain(quiet, 0.05, 1, t, custom);
   const boosted = calculateGain(quiet, 0.05, 1, 500, custom);
   assert.equal(boosted, 1.25);
-  const loud = createUserState(100);
+  const loud = createUserState(100, 0.1);
   const reduced = calculateGain(loud, 0.8, 1, 0, custom);
   assert.equal(reduced, 0.75);
 });
@@ -118,7 +116,7 @@ test("control panel changes profiles without native dropdowns and keeps advanced
   const elements = traverse(panel);
   const soft = elements.find((node) => node.dataset.value === "soft");
   const sliders = elements.filter((node) => node.tag === "input" && node.type === "range");
-  assert.equal(sliders.length, 5);
+  assert.equal(sliders.length, 4);
   assert.equal(
     elements.some((node) => node.tag === "select"),
     false,
@@ -127,10 +125,10 @@ test("control panel changes profiles without native dropdowns and keeps advanced
   soft.fire("click");
   assert.equal(settings.maxGain, 1.3);
   const targetSlider = sliders[0];
-  targetSlider.value = "0.15";
+  targetSlider.value = "1.5";
   targetSlider.fire("input");
   assert.equal(settings.profile, "custom");
-  assert.equal(settings.targetLevel, 0.15);
+  assert.equal(settings.maxGain, 1.5);
   assert.equal(
     traverse(panel).find((node) => node.dataset.value === "soft"),
     soft,

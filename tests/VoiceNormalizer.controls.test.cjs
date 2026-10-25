@@ -4,86 +4,19 @@ const Plugin = require("../VoiceNormalizer.plugin.js");
 const { createDocument, traverse } = require("./fake-dom.cjs");
 const { en, ru, languageFor, translate } = require("../src/i18n");
 
-const { mockClock } = require("./clock.cjs");
-
+const { fixture: coreFixture } = require("./plugin-fixture.cjs");
 function fixture(t) {
-  const advanceClock = mockClock(t);
-  const saved = {};
-  const volume = new Map([
-    ["a", 100],
-    ["b", 80],
-    ["self", 100],
-  ]);
-  let roster = ["a", "b", "self"];
-  let level = 0.03;
-  const conn = {
-    getUserIdBySsrc: (ssrc) => roster[ssrc - 1],
-    getStats: () => {
-      advanceClock();
-      return {
-        rtp: {
-          inbound: {
-            audio: roster.map((_, index) => ({
-              ssrc: index + 1,
-              audioLevel: level,
-              audioDetected: level > 0 ? 1 : 0,
-            })),
-          },
-        },
-      };
-    },
-  };
-  const stores = {
-    LocaleStore: { locale: "ru" },
-    UserStore: { getCurrentUser: () => ({ id: "self" }), getUser: (id) => ({ username: id }) },
-    MediaEngineStore: { getLocalVolume: (id) => volume.get(id) ?? 100 },
-    VoiceStateStore: {
-      getCurrentClientVoiceChannelId: () => "room",
-      getVoiceStatesForChannel: () => roster.map((userId) => ({ userId })),
-    },
-  };
-  global.BdApi = {
-    Data: {
-      load: (_, key) => saved[key],
-      save: (_, key, value) => {
-        saved[key] = structuredClone(value);
-      },
-    },
-    Webpack: {
-      getStore: (name) => stores[name],
-      getModule: (predicate) =>
-        [
-          { setLocalVolume: (id, value) => volume.set(id, value) },
-          { getMediaEngine: () => ({ eachConnection: (cb) => cb(conn) }) },
-        ].find(predicate),
-    },
-    UI: { showToast() {} },
-    ContextMenu: { patch: () => () => {} },
-  };
+  const f = coreFixture(t, {
+    targets: [],
+    roster: ["a", "b", "self"],
+    volumes: { a: 100, b: 80, self: 100 },
+    level: 0.03,
+  });
   global.document = createDocument();
-  const plugins = [];
-  const create = () => {
-    const p = new Plugin();
-    p.start();
-    plugins.push(p);
-    return p;
-  };
   t.after(() => {
-    plugins.forEach((p) => p.stop());
     delete global.document;
   });
-  return {
-    create,
-    volume,
-    saved,
-    stores,
-    setRoster: (value) => {
-      roster = value;
-    },
-    setLevel: (value) => {
-      level = value;
-    },
-  };
+  return f;
 }
 
 test("everyone mode follows new participants, excludes self, and survives restart", async (t) => {
@@ -171,15 +104,16 @@ test("friendly statuses distinguish learning, active speech, pauses, and mute", 
   const f = fixture(t);
   const p = f.create();
   p.select("a", true);
-  assert.equal(p.userStatus("a"), "waitingChannel");
+  p.references.delete("a");
+  assert.equal(p.userStatus("a"), "unavailable");
   for (let i = 0; i < 3; i++) await p.tick(p.generation);
   assert.equal(p.userStatus("a"), "learning");
-  for (let i = 0; i < 10; i++) await p.tick(p.generation);
+  for (let i = 0; i < 20; i++) await p.tick(p.generation);
   assert.equal(p.userStatus("a"), "active");
   f.setLevel(0);
   await p.tick(p.generation);
   assert.equal(p.userStatus("a"), "waitingSpeech");
-  f.volume.set("a", 0);
+  f.setVolume("a", 0);
   assert.equal(p.userStatus("a"), "muted");
 });
 
@@ -230,7 +164,7 @@ test("language follows Discord, can be overridden, and both dictionaries cover t
   assert.equal(next.language(), "en");
   assert.deepEqual(Object.keys(en).sort(), Object.keys(ru).sort());
   assert.equal(languageFor("auto", "de"), "en");
-  assert.equal(translate("en", "correction", 80), "Volume: 80% of baseline");
+  assert.equal(translate("en", "correction", 80), "Automatic correction: ×80");
 });
 
 test("editing settings on a disabled plugin cannot start voice processing", async (t) => {
